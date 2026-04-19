@@ -21,6 +21,9 @@ dist-ssr
 .imap_mail_state.json
 **/__pycache__/
 
+# Local-only mail sync / IMAP tooling (hosts, credentials — keep out of git)
+/scripts/
+
 # Terraform / infra state
 **/.terraform/*
 *.tfstate

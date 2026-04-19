@@ -40,11 +40,11 @@ This app is a **static site**. You can deploy the `dist/` folder to any static h
 - Set CloudFront origin to the bucket
 - For SPA routing (if you add it later), set CloudFront error response to serve `/index.html`
 
-## AWS production architecture (`cmail.cirak.ca`)
+## AWS production architecture
 
-This repository now includes Terraform under `terraform/` for:
+This repository includes Terraform under `terraform/` for:
 
-- Route53 alias record: `cmail.cirak.ca`
+- Route53 alias record for your app hostname
 - ACM certificate (us-east-1) for CloudFront
 - CloudFront + private S3 website bucket
 - Cognito User Pool (app sign-in uses SRP on your domain; legacy OAuth2+PKCE still works for `?code=` callbacks)
@@ -74,12 +74,12 @@ After apply, note these outputs:
 Create `.env.local` in project root:
 
 ```bash
-VITE_COGNITO_REGION=ca-central-1
+VITE_COGNITO_REGION=<your-aws-region>
 VITE_COGNITO_USER_POOL_ID=<terraform output -raw cognito_user_pool_id>
 VITE_COGNITO_DOMAIN=<terraform output cognito_domain>
 VITE_COGNITO_CLIENT_ID=<terraform output cognito_client_id>
-VITE_COGNITO_REDIRECT_URI=https://cmail.cirak.ca/
-VITE_COGNITO_LOGOUT_URI=https://cmail.cirak.ca/
+VITE_COGNITO_REDIRECT_URI=<terraform output app_url or your SPA URL>
+VITE_COGNITO_LOGOUT_URI=<same as redirect base URL>
 ```
 
 ### 3) Build and upload UI
@@ -92,56 +92,20 @@ aws cloudfront create-invalidation --distribution-id <distribution-id> --paths "
 
 ### 4) Create first user in Cognito
 
-- AWS Console -> Cognito -> User Pools -> `cmail-users`
+- AWS Console → Cognito → User Pools → select the pool created by Terraform
 - Create user with email
 - Mark email verified / set temporary password flow as needed
-- Login from `https://cmail.cirak.ca/` and complete password change
+- Open your deployed app URL from `terraform output app_url` and complete password change
 
-### Mail archive (`data.cmail.cirak.ca`)
+### Mail archive
 
-Terraform provisions a **private** S3 bucket named like `data.cmail.cirak.ca` (not a public website) and a **DynamoDB** table for metadata pointers (`s3_key`, subject, folder, etc.). Raw MIME is stored under `raw/<mailbox>/…/*.eml`.
+Terraform provisions a **private** mail-data bucket (not a public website) and a **DynamoDB** table for metadata (`s3_key`, subject, folder, etc.). Raw MIME lives under `raw/<mailbox>/…/*.eml`.
 
-After `terraform apply`, note:
+Use **`terraform output`** for resource names (for example `mail_data_bucket_name`, `mail_metadata_table_name`, `mail_sync_policy_arn`). Attach `mail_sync_policy_arn` only to the IAM principal that performs archive sync.
 
-- `mail_data_bucket_name`
-- `mail_metadata_table_name`
-- `mail_sync_policy_arn` (attach to the IAM user that runs the sync script)
+Optional: set `mail_sync_iam_user_name` in `terraform.tfvars` to attach that policy automatically.
 
-Optional: set `mail_sync_iam_user_name` in `terraform.tfvars` to auto-attach the policy to an existing IAM user.
-
-#### IMAP import (e.g. WorkMail) — run from your PC or a jump host
-
-Windows (recommended): run from the repository root — the script prompts for IMAP user (if `IMAP_USER` is unset) and password securely:
-
-```powershell
-cd E:\WORK\Cmail
-.\scripts\run_imap_sync.ps1
-```
-
-Manual environment setup:
-
-```bash
-python -m venv .venv-imap
-source .venv-imap/bin/activate   # Windows: .venv-imap\Scripts\activate
-pip install -r scripts/requirements-imap-sync.txt
-
-export AWS_REGION=ca-central-1
-export MAIL_ARCHIVE_BUCKET=$(cd terraform && terraform output -raw mail_data_bucket_name)
-export MAIL_METADATA_TABLE=$(cd terraform && terraform output -raw mail_metadata_table_name)
-export IMAP_HOST=imap.mail.us-east-1.awsapps.com   # Use the IMAP host for your WorkMail region
-export IMAP_USER=you@cirak.ca
-export IMAP_PASSWORD=*** 
-
-python scripts/imap_to_mail_archive.py
-```
-
-On the first run **LIST is disabled** (many WorkMail servers hang on LIST); common folder names (`INBOX`, `Sent Items`, …) are tried instead. To pass your own folder list:
-
-`export IMAP_FOLDERS='INBOX,Sent Items,Custom Folder'`  
-
-To discover folders from the server, set `IMAP_USE_LIST=1` (turn it off if sync is slow or stalls).
-
-First run downloads all messages per folder; later runs only fetch new UIDs (state in `.imap_mail_state.json`). Set `SKIP_DYNAMODB=1` to upload S3 only.
+Keep any **IMAP → S3 import scripts, hosts, and passwords outside this repo**—wire them locally with outputs from Terraform and AWS credentials from your environment (never commit secrets).
 
 ## Notes
 
