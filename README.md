@@ -1,5 +1,6 @@
 # Cmail (Vite + React)
 [![CI](https://github.com/SinanCirak/CMail/actions/workflows/deploy-frontend.yml/badge.svg)](https://github.com/SinanCirak/CMail/actions/workflows/deploy-frontend.yml)
+
 Mail UI prototype (list + reading pane, compose, settings).
 
 ## Run locally
