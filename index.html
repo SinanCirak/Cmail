@@ -11,6 +11,10 @@
       rel="stylesheet"
     />
     <title>Cmail — Mail dashboard</title>
+    <!-- Cognito helpers reference `global`; browsers expose globalThis. -->
+    <script>
+      window.global = window.globalThis
+    </script>
   </head>
   <body>
     <div id="root"></div>
