@@ -8,9 +8,32 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.venv-imap
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+.env.local
+
+# Local mail sync state (never commit)
+.imap_mail_state.json
+
+# Local automation / sync scripts (not included in repo)
+/scripts/
+
+# Terraform / infra state
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+*.plan
+cmail.plan
+cmail-lambda.zip
+terraform/*.zip
+terraform/tfplan*
 
 # Editor directories and files
 .vscode/*

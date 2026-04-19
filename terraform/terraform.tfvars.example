@@ -1,0 +1,11 @@
+aws_region            = "ca-central-1"
+domain_name           = "cirak.ca"
+subdomain_name        = "cmail"
+hosted_zone_id        = "ZXXXXXXXXXXXXX"
+cognito_domain_prefix = "cmail-cirak-auth"
+
+# Optional: force explicit CORS origin
+# cors_allow_origin = "https://cmail.cirak.ca"
+
+# Optional: attach S3+DynamoDB mail-sync policy to this IAM user (must exist)
+# mail_sync_iam_user_name = "sinan"

@@ -1,0 +1,497 @@
+"""
+HTTP API Lambda: mail list + raw content from DynamoDB + S3 (.eml).
+JWT claims must include email (Cognito) matching MAILBOX#... partition.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import re
+import time
+import urllib.parse
+import uuid
+from datetime import datetime, timezone
+from email import policy
+from email.message import EmailMessage
+from email.parser import BytesParser
+from email.utils import parseaddr
+
+import boto3
+
+METADATA_TABLE = os.environ["METADATA_TABLE"]
+MAIL_BUCKET = os.environ["MAIL_BUCKET"]
+_AWS_REGION = os.environ.get("AWS_REGION", "ca-central-1")
+
+ddb = boto3.client("dynamodb")
+s3 = boto3.client("s3")
+ses = boto3.client("ses", region_name=_AWS_REGION)
+
+# DynamoDB `folder` (imap _sanitize_folder) -> UI nav id. WorkMail may use "Sent Messages"
+# or "Deleted Messages" → Sent_Messages / Deleted_Messages; not only Sent_Items / Deleted_Items.
+FOLDER_TO_NAV: dict[str, str] = {
+    "INBOX": "inbox",
+    "Sent_Items": "sent",
+    "Sent_Messages": "sent",
+    "Sent": "sent",
+    "Drafts": "drafts",
+    "Junk_Email": "spam",
+    "Junk": "spam",
+    "Deleted_Items": "trash",
+    "Deleted_Messages": "trash",
+    "Trash": "trash",
+}
+
+
+def _store_prefixes_for_nav(nav: str) -> list[str]:
+    nav = (nav or "inbox").lower()
+    keys = sorted({k for k, v in FOLDER_TO_NAV.items() if v == nav})
+    return keys
+
+
+def _safe_mailbox(email: str) -> str:
+    return re.sub(r"[^\w@.-]+", "_", email)[:200]
+
+
+def _pk(email: str) -> str:
+    return f"MAILBOX#{_safe_mailbox(email)}"
+
+
+# Canonical `folder` / sk segment for mutations (matches IMAP sanitize for these names).
+NAV_PRIMARY_STORE: dict[str, str] = {
+    "inbox": "INBOX",
+    "sent": "Sent_Items",
+    "drafts": "Drafts",
+    "spam": "Junk_Email",
+    "trash": "Deleted_Items",
+}
+
+
+def _folder_uid_from_sk(sk: str) -> tuple[str, str]:
+    if not sk.startswith("MSG#"):
+        raise ValueError("invalid sk")
+    rest = sk[4:]
+    if "#" not in rest:
+        raise ValueError("invalid sk")
+    folder_safe, uid = rest.rsplit("#", 1)
+    return folder_safe, uid
+
+
+def _parse_json_body(event: dict) -> dict:
+    try:
+        raw = event.get("body") or "{}"
+        if isinstance(raw, str):
+            if event.get("isBase64Encoded"):
+                raw = base64.b64decode(raw).decode("utf-8")
+            return json.loads(raw or "{}")
+        return {}
+    except Exception:
+        return {}
+
+
+def _json_headers() -> dict[str, str]:
+    # Browsers may cache anonymous GET /mail/messages without this — stale list after delete/move + F5.
+    return {
+        "content-type": "application/json",
+        "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+        "pragma": "no-cache",
+        "vary": "Authorization",
+    }
+
+
+def _response(status: int, body: dict) -> dict:
+    return {
+        "statusCode": status,
+        "headers": _json_headers(),
+        "body": json.dumps(body, default=str),
+    }
+
+
+def _claims(event) -> dict:
+    return (
+        event.get("requestContext", {})
+        .get("authorizer", {})
+        .get("jwt", {})
+        .get("claims", {})
+    )
+
+
+def _user_email(event) -> str | None:
+    c = _claims(event)
+    email_claim = (c.get("email") or "").strip()
+    if email_claim:
+        return email_claim.lower()
+    for k in ("username", "cognito:username"):
+        raw = (c.get(k) or "").strip()
+        if raw and "@" in raw:
+            return raw.lower()
+    return None
+
+
+def list_folders(user_email: str) -> dict:
+    pk = _pk(user_email)
+    counts: dict[str, int] = {}
+    start_key = None
+    while True:
+        kw: dict = {
+            "TableName": METADATA_TABLE,
+            "KeyConditionExpression": "pk = :pk",
+            "ExpressionAttributeValues": {":pk": {"S": pk}},
+        }
+        if start_key:
+            kw["ExclusiveStartKey"] = start_key
+        resp = ddb.query(**kw)
+        for item in resp.get("Items", []):
+            folder_attr = item.get("folder", {}).get("S", "")
+            nav = FOLDER_TO_NAV.get(folder_attr)
+            if not nav:
+                continue
+            counts[nav] = counts.get(nav, 0) + 1
+        start_key = resp.get("LastEvaluatedKey")
+        if not start_key:
+            break
+
+    folders = [{"id": k, "count": v} for k, v in sorted(counts.items())]
+    return _response(200, {"folders": folders, "counts": counts})
+
+
+def list_messages(user_email: str, nav_folder: str) -> dict:
+    nav_key = (nav_folder or "inbox").lower()
+    store_names = _store_prefixes_for_nav(nav_key)
+    if not store_names:
+        return _response(400, {"error": "unknown folder"})
+
+    pk = _pk(user_email)
+    items_out: list[dict] = []
+    seen_sk: set[str] = set()
+
+    for store_folder in store_names:
+        prefix = f"MSG#{store_folder}#"
+        start_key = None
+        while True:
+            kw = {
+                "TableName": METADATA_TABLE,
+                "KeyConditionExpression": "pk = :pk AND begins_with(sk, :pre)",
+                "ExpressionAttributeValues": {":pk": {"S": pk}, ":pre": {"S": prefix}},
+            }
+            if start_key:
+                kw["ExclusiveStartKey"] = start_key
+            resp = ddb.query(**kw)
+            for item in resp.get("Items", []):
+                sk = item["sk"]["S"]
+                if sk in seen_sk:
+                    continue
+                seen_sk.add(sk)
+                subject = item.get("subject", {}).get("S", "")
+                from_addr = item.get("from_addr", {}).get("S", "")
+                sort_ts = int(item.get("sort_ts", {}).get("N", "0"))
+                s3_key = item.get("s3_key", {}).get("S", "")
+                uid = item.get("imap_uid", {}).get("S", sk.split("#")[-1])
+                items_out.append(
+                    {
+                        "id": sk,
+                        "folder": nav_key,
+                        "subject": subject or "(No subject)",
+                        "snippet": (subject[:160] + "…") if len(subject) > 160 else subject,
+                        "from": {
+                            "name": from_addr.split("<")[0].strip() or from_addr,
+                            "email": _parse_email(from_addr),
+                        },
+                        "sentAt": datetime.fromtimestamp(sort_ts, tz=timezone.utc).isoformat(),
+                        "read": True,
+                        "starred": False,
+                        "hasAttachment": False,
+                        "s3Key": s3_key,
+                        "imapUid": uid,
+                    }
+                )
+            start_key = resp.get("LastEvaluatedKey")
+            if not start_key:
+                break
+
+    items_out.sort(key=lambda x: x["sentAt"], reverse=True)
+    return _response(200, {"messages": items_out})
+
+
+def _parse_email(from_line: str) -> str:
+    m = re.search(r"<([^>]+)>", from_line)
+    if m:
+        return m.group(1).strip()
+    if "@" in from_line:
+        return from_line.strip()
+    return ""
+
+
+def get_content(user_email: str, s3_key: str) -> dict:
+    safe = _safe_mailbox(user_email)
+    prefix = f"raw/{safe}/"
+    if not s3_key.startswith(prefix):
+        return _response(403, {"error": "invalid key"})
+    obj = s3.get_object(Bucket=MAIL_BUCKET, Key=s3_key)
+    raw = obj["Body"].read()
+    msg = BytesParser(policy=policy.default).parsebytes(raw)
+
+    body_text = ""
+    body_html = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            if ctype == "text/plain" and not body_text:
+                try:
+                    body_text = part.get_content()
+                except Exception:
+                    body_text = ""
+            elif ctype == "text/html" and not body_html:
+                try:
+                    body_html = part.get_content()
+                except Exception:
+                    body_html = ""
+    else:
+        try:
+            payload = msg.get_payload(decode=True)
+            if isinstance(payload, bytes):
+                body_text = payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
+            else:
+                body_text = str(payload or "")
+        except Exception:
+            body_text = ""
+
+    use_html = bool(body_html.strip())
+    body_out = body_html if use_html else body_text
+
+    attachments: list[dict] = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            disp = part.get_content_disposition()
+            if disp == "attachment":
+                fname = part.get_filename() or "attachment"
+                attachments.append({"name": fname})
+
+    return _response(
+        200,
+        {
+            "body": body_out,
+            "isHtml": use_html,
+            "attachments": attachments,
+        },
+    )
+
+
+def delete_message(user_email: str, sk: str) -> dict:
+    pk = _pk(user_email)
+    item = ddb.get_item(TableName=METADATA_TABLE, Key={"pk": {"S": pk}, "sk": {"S": sk}}).get(
+        "Item",
+    )
+    if not item:
+        return _response(404, {"error": "not found"})
+    s3_key = item.get("s3_key", {}).get("S", "")
+    if not s3_key.startswith(f"raw/{_safe_mailbox(user_email)}/"):
+        return _response(403, {"error": "invalid key"})
+    try:
+        if s3_key:
+            s3.delete_object(Bucket=MAIL_BUCKET, Key=s3_key)
+        ddb.delete_item(TableName=METADATA_TABLE, Key={"pk": {"S": pk}, "sk": {"S": sk}})
+    except Exception as e:
+        return _response(500, {"error": str(e)})
+    return _response(200, {"ok": True})
+
+
+def move_message(user_email: str, sk: str, target_nav: str) -> dict:
+    target_nav = (target_nav or "").lower().strip()
+    new_store = NAV_PRIMARY_STORE.get(target_nav)
+    if not new_store:
+        return _response(400, {"error": "unknown folder"})
+
+    pk = _pk(user_email)
+    safe = _safe_mailbox(user_email)
+
+    item = ddb.get_item(TableName=METADATA_TABLE, Key={"pk": {"S": pk}, "sk": {"S": sk}}).get(
+        "Item",
+    )
+    if not item:
+        return _response(404, {"error": "not found"})
+
+    old_key = item.get("s3_key", {}).get("S", "")
+    if not old_key.startswith(f"raw/{safe}/"):
+        return _response(403, {"error": "invalid key"})
+
+    try:
+        _, uid = _folder_uid_from_sk(sk)
+    except ValueError:
+        return _response(400, {"error": "invalid sk"})
+
+    new_sk = f"MSG#{new_store}#{uid}"
+    new_key = f"raw/{safe}/{new_store}/{uid}.eml"
+
+    if new_sk == sk:
+        return _response(200, {"ok": True, "sk": sk, "s3Key": old_key})
+
+    try:
+        s3.copy_object(
+            Bucket=MAIL_BUCKET,
+            CopySource={"Bucket": MAIL_BUCKET, "Key": old_key},
+            Key=new_key,
+            MetadataDirective="COPY",
+        )
+        s3.delete_object(Bucket=MAIL_BUCKET, Key=old_key)
+    except Exception as e:
+        return _response(500, {"error": f"s3: {e}"})
+
+    try:
+        ddb.delete_item(TableName=METADATA_TABLE, Key={"pk": {"S": pk}, "sk": {"S": sk}})
+        item2 = dict(item)
+        item2["sk"] = {"S": new_sk}
+        item2["s3_key"] = {"S": new_key}
+        item2["folder"] = {"S": new_store}
+        # keep subject, from_addr, sort_ts, imap_uid, etc.
+        ddb.put_item(TableName=METADATA_TABLE, Item=item2)
+    except Exception as e:
+        return _response(500, {"error": str(e)})
+
+    return _response(200, {"ok": True, "sk": new_sk, "s3Key": new_key, "folder": target_nav})
+
+
+def _parse_address_list_field(s: str) -> list[str]:
+    out: list[str] = []
+    for part in (s or "").replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        _, addr = parseaddr(part)
+        if addr and "@" in addr:
+            out.append(addr.lower())
+    return out
+
+
+def _save_sent_copy(user_email: str, msg: EmailMessage, raw: bytes, subject: str) -> None:
+    mid_hdr = (msg.get("Message-ID") or "").strip()
+    uid = hashlib.sha256(mid_hdr.encode("utf-8") if mid_hdr else raw[:256]).hexdigest()[:24]
+    safe = _safe_mailbox(user_email)
+    folder_safe = "Sent_Items"
+    pk = _pk(user_email)
+    sk = f"MSG#{folder_safe}#{uid}"
+    key = f"raw/{safe}/{folder_safe}/{uid}.eml"
+    s3.put_object(
+        Bucket=MAIL_BUCKET,
+        Key=key,
+        Body=raw,
+        ContentType="message/rfc822",
+        ServerSideEncryption="AES256",
+        Metadata={"source": "cmail-send"},
+    )
+    ts = int(time.time())
+    ddb.put_item(
+        TableName=METADATA_TABLE,
+        Item={
+            "pk": {"S": pk},
+            "sk": {"S": sk},
+            "s3_key": {"S": key},
+            "subject": {"S": (subject or "(No subject)")[:900]},
+            "from_addr": {"S": user_email[:900]},
+            "imap_uid": {"S": uid},
+            "folder": {"S": folder_safe},
+            "sort_ts": {"N": str(ts)},
+        },
+    )
+
+
+def send_outbound(user_email: str, payload: dict) -> dict:
+    """Send via SES (From = signed-in user). Requires verified identity/domain in SES."""
+    to_raw = (payload.get("to") or "").strip()
+    cc_raw = (payload.get("cc") or "").strip()
+    bcc_raw = (payload.get("bcc") or "").strip()
+    subject = (payload.get("subject") or "").strip()
+    body_text = payload.get("body") or ""
+    if not to_raw:
+        return _response(400, {"error": "to required"})
+    dests = _parse_address_list_field(to_raw)
+    dests += _parse_address_list_field(cc_raw)
+    dests += _parse_address_list_field(bcc_raw)
+    if not dests:
+        return _response(400, {"error": "no valid recipient addresses"})
+    msg = EmailMessage()
+    msg["From"] = user_email
+    msg["To"] = to_raw
+    if cc_raw:
+        msg["Cc"] = cc_raw
+    if bcc_raw:
+        msg["Bcc"] = bcc_raw
+    msg["Subject"] = subject or "(No subject)"
+    dom = user_email.split("@", 1)[-1] if "@" in user_email else "local"
+    msg["Message-ID"] = f"<{uuid.uuid4().hex}@{dom}>"
+    t = body_text.strip()
+    if t.startswith("<") and "</" in t:
+        msg.set_content("HTML message — use an HTML-capable mail client.", subtype="plain", charset="utf-8")
+        msg.add_alternative(body_text, subtype="html", charset="utf-8")
+    else:
+        msg.set_content(body_text if body_text else "(empty)", subtype="plain", charset="utf-8")
+    raw = msg.as_bytes(policy=policy.SMTP)
+    uniq_dest = list(dict.fromkeys(dests))
+    try:
+        out = ses.send_raw_email(
+            Source=user_email,
+            Destinations=uniq_dest,
+            RawMessage={"Data": raw},
+        )
+    except Exception as e:
+        return _response(500, {"error": str(e)})
+    ses_mid = out.get("MessageId", "")
+    try:
+        _save_sent_copy(user_email, msg, raw, subject)
+    except Exception:
+        pass
+    return _response(200, {"ok": True, "sesMessageId": ses_mid})
+
+
+def lambda_handler(event, context):
+    method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
+    path = event.get("rawPath", "") or ""
+
+    if method == "OPTIONS":
+        return {"statusCode": 200, "headers": _json_headers(), "body": ""}
+
+    user_email = _user_email(event)
+    if not user_email:
+        return _response(403, {"error": "missing email claim"})
+
+    qs = event.get("queryStringParameters") or {}
+
+    if path == "/mail/folders" and method == "GET":
+        return list_folders(user_email)
+
+    if path == "/mail/messages" and method == "GET":
+        folder = qs.get("folder", "inbox")
+        return list_messages(user_email, folder)
+
+    if path == "/mail/content" and method == "GET":
+        sk = qs.get("s3_key") or qs.get("s3Key")
+        if not sk:
+            return _response(400, {"error": "s3_key required"})
+        sk = urllib.parse.unquote(sk)
+        return get_content(user_email, sk)
+
+    body = _parse_json_body(event)
+
+    if path == "/mail/message" and method == "PATCH":
+        sk_raw = body.get("sk") or qs.get("sk")
+        folder = body.get("folder") or qs.get("folder")
+        if not sk_raw:
+            return _response(400, {"error": "sk required"})
+        sk_raw = urllib.parse.unquote(str(sk_raw))
+        if not folder:
+            return _response(400, {"error": "folder required"})
+        return move_message(user_email, sk_raw, str(folder))
+
+    if path == "/mail/message" and method == "DELETE":
+        sk_raw = qs.get("sk") or body.get("sk")
+        if not sk_raw:
+            return _response(400, {"error": "sk required"})
+        sk_raw = urllib.parse.unquote(str(sk_raw))
+        return delete_message(user_email, sk_raw)
+
+    if path == "/mail/send" and method == "POST":
+        return send_outbound(user_email, body)
+
+    return _response(404, {"error": "not found"})

@@ -39,6 +39,8 @@ export interface MailMessage {
   hasAttachment?: boolean
   attachments?: MailAttachment[]
   labels?: string[]
+  /** S3 object key for archived .eml (live mailbox API) */
+  s3Key?: string
 }
 
 export function customFolderKey(userFolderId: string): `custom:${string}` {

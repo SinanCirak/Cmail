@@ -40,6 +40,107 @@ This app is a **static site**. You can deploy the `dist/` folder to any static h
 - Set CloudFront origin to the bucket
 - For SPA routing (if you add it later), set CloudFront error response to serve `/index.html`
 
+## AWS production architecture (`cmail.cirak.ca`)
+
+This repository now includes Terraform under `terraform/` for:
+
+- Route53 alias record: `cmail.cirak.ca`
+- ACM certificate (us-east-1) for CloudFront
+- CloudFront + private S3 website bucket
+- Cognito User Pool + Hosted UI (OAuth2 code flow + PKCE client)
+- API Gateway HTTP API with JWT authorizer (Cognito)
+- Lambda sample protected endpoint (`GET /me`)
+
+### 1) Provision infrastructure
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform plan
+terraform apply
+```
+
+After apply, note these outputs:
+
+- `app_url`
+- `api_base_url`
+- `cognito_domain`
+- `cognito_client_id`
+
+### 2) Configure frontend auth environment
+
+Create `.env.local` in project root:
+
+```bash
+VITE_COGNITO_REGION=ca-central-1
+VITE_COGNITO_DOMAIN=<terraform output cognito_domain>
+VITE_COGNITO_CLIENT_ID=<terraform output cognito_client_id>
+VITE_COGNITO_REDIRECT_URI=https://cmail.cirak.ca/
+VITE_COGNITO_LOGOUT_URI=https://cmail.cirak.ca/
+```
+
+### 3) Build and upload UI
+
+```bash
+npm run build
+aws s3 sync dist/ s3://<terraform output site_bucket_name> --delete
+aws cloudfront create-invalidation --distribution-id <distribution-id> --paths "/*"
+```
+
+### 4) Create first user in Cognito
+
+- AWS Console -> Cognito -> User Pools -> `cmail-users`
+- Create user with email
+- Mark email verified / set temporary password flow as needed
+- Login from `https://cmail.cirak.ca/` and complete password change
+
+### Mail archive (`data.cmail.cirak.ca`)
+
+Terraform provisions a **private** S3 bucket named like `data.cmail.cirak.ca` (not a public website) and a **DynamoDB** table for metadata pointers (`s3_key`, subject, folder, etc.). Raw MIME is stored under `raw/<mailbox>/…/*.eml`.
+
+After `terraform apply`, note:
+
+- `mail_data_bucket_name`
+- `mail_metadata_table_name`
+- `mail_sync_policy_arn` (attach to the IAM user that runs the sync script)
+
+Optional: set `mail_sync_iam_user_name` in `terraform.tfvars` to auto-attach the policy to an existing IAM user.
+
+#### IMAP import (e.g. WorkMail) — run from your PC or a jump host
+
+Windows (recommended): repo kökünde çalıştır — şifre güvenli sorulur:
+
+```powershell
+cd E:\WORK\Cmail
+.\scripts\run_imap_sync.ps1
+```
+
+Manuel ortam değişkenleri:
+
+```bash
+python -m venv .venv-imap
+source .venv-imap/bin/activate   # Windows: .venv-imap\Scripts\activate
+pip install -r scripts/requirements-imap-sync.txt
+
+export AWS_REGION=ca-central-1
+export MAIL_ARCHIVE_BUCKET=$(cd terraform && terraform output -raw mail_data_bucket_name)
+export MAIL_METADATA_TABLE=$(cd terraform && terraform output -raw mail_metadata_table_name)
+export IMAP_HOST=imap.mail.us-east-1.awsapps.com   # Bu org için WorkMail region = us-east-1
+export IMAP_USER=you@cirak.ca
+export IMAP_PASSWORD=*** 
+
+python scripts/imap_to_mail_archive.py
+```
+
+İlk çalıştırma için **LIST kullanılmaz** (WorkMail’de sık sık takılması nedeniyle); bunun yerine yaygın klasör adları (`INBOX`, `Sent Items`, …) tek tek denenir. Kendi klasör listeni vermek için:
+
+`export IMAP_FOLDERS='INBOX,Sent Items,Özel Klasör'`  
+
+Tüm klasörleri sunucudan otomatik bulmak için `IMAP_USE_LIST=1` (yavaş veya takılırsa kapatın).
+
+First run downloads all messages per folder; later runs only fetch new UIDs (state in `.imap_mail_state.json`). Set `SKIP_DYNAMODB=1` to upload S3 only.
+
 ## Notes
 
 The rest of this README is the original Vite template notes.
