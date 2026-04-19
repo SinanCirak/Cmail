@@ -526,9 +526,11 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const [composeOpen, setComposeOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [mobileShowDetail, setMobileShowDetail] = useState(false)
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(() => new Set())
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const panesRef = useRef<HTMLElement | null>(null)
+  const selectAllCheckboxRef = useRef<HTMLInputElement>(null)
   const dragRef = useRef<{ active: boolean; startX: number; startW: number }>({
     active: false,
     startX: 0,
@@ -635,6 +637,16 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     [emails, selectedId],
   )
 
+  const toolbarTargetIds = useMemo(() => {
+    if (bulkSelectedIds.size > 0) return [...bulkSelectedIds]
+    if (selectedId) return [selectedId]
+    return []
+  }, [bulkSelectedIds, selectedId])
+
+  const allBulkSelected =
+    listEmails.length > 0 && listEmails.every((m) => bulkSelectedIds.has(m.id))
+  const someBulkSelected = listEmails.some((m) => bulkSelectedIds.has(m.id))
+
   const allowInlineImages = useMemo(() => {
     if (!selected?.inlineImages?.length) return true
     if (showImagesSessionIds.has(selected.id)) return true
@@ -701,8 +713,40 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   }, [listEmails])
 
   useEffect(() => {
+    const el = selectAllCheckboxRef.current
+    if (!el) return
+    el.indeterminate = someBulkSelected && !allBulkSelected
+  }, [someBulkSelected, allBulkSelected])
+
+  useEffect(() => {
+    setBulkSelectedIds(new Set())
+  }, [search])
+
+  useEffect(() => {
     setMobileShowDetail(false)
+    setBulkSelectedIds(new Set())
   }, [folder])
+
+  useEffect(() => {
+    if (!sidebarOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSidebarOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [sidebarOpen])
+
+  useEffect(() => {
+    if (!sidebarOpen) {
+      document.body.style.overflow = ''
+      return
+    }
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [sidebarOpen])
 
   const toggleStar = useCallback((id: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -711,7 +755,27 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     )
   }, [])
 
+  const toggleSelectAll = useCallback(() => {
+    setBulkSelectedIds((prev) => {
+      const ids = listEmails.map((m) => m.id)
+      if (ids.length === 0) return new Set()
+      const allOn = ids.every((id) => prev.has(id))
+      if (allOn) return new Set()
+      return new Set(ids)
+    })
+  }, [listEmails])
+
+  const toggleBulkRow = useCallback((id: string) => {
+    setBulkSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
   const openMail = useCallback((id: string) => {
+    setBulkSelectedIds(new Set())
     setSelectedId(id)
     setEmails((prev) =>
       prev.map((m) => (m.id === id ? { ...m, read: true } : m)),
@@ -886,6 +950,87 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
       )
     },
     [emails, useLiveMail, mailApiBase, loadLiveMailbox],
+  )
+
+  const archiveToolbar = useCallback(async () => {
+    const inboxIds = toolbarTargetIds.filter((id) => emails.find((m) => m.id === id)?.folder === 'inbox')
+    if (inboxIds.length === 0) return
+    if (useLiveMail && mailApiBase) {
+      const session = getSession()
+      if (!session) return
+      try {
+        const token = getBearerTokenForApi(session)
+        await Promise.all(inboxIds.map((id) => moveMailMessage(mailApiBase, token, id, 'trash')))
+        await loadLiveMailbox()
+      } catch (e) {
+        setMailLoadError(e instanceof Error ? e.message : 'Archive failed')
+      }
+      setBulkSelectedIds(new Set())
+      return
+    }
+    setEmails((prev) =>
+      prev.map((m) => (inboxIds.includes(m.id) ? { ...m, folder: 'trash' as const } : m)),
+    )
+    setBulkSelectedIds(new Set())
+  }, [toolbarTargetIds, emails, useLiveMail, mailApiBase, loadLiveMailbox])
+
+  const deleteToolbar = useCallback(async () => {
+    const ids = toolbarTargetIds
+    if (ids.length === 0) return
+    if (useLiveMail && mailApiBase) {
+      const session = getSession()
+      if (!session) return
+      try {
+        const token = getBearerTokenForApi(session)
+        await Promise.all(
+          ids.map(async (id) => {
+            const msg = emails.find((m) => m.id === id)
+            if (!msg) return
+            if (msg.folder === 'trash') {
+              await deleteMailMessage(mailApiBase, token, id)
+            } else {
+              await moveMailMessage(mailApiBase, token, id, 'trash')
+            }
+          }),
+        )
+        await loadLiveMailbox()
+      } catch (e) {
+        setMailLoadError(e instanceof Error ? e.message : 'Delete failed')
+      }
+      setBulkSelectedIds(new Set())
+      return
+    }
+    setEmails((prev) => {
+      const idSet = new Set(ids)
+      const afterPerm = prev.filter((m) => !(m.folder === 'trash' && idSet.has(m.id)))
+      return afterPerm.map((m) =>
+        idSet.has(m.id) && m.folder !== 'trash' ? { ...m, folder: 'trash' as const } : m,
+      )
+    })
+    setBulkSelectedIds(new Set())
+  }, [toolbarTargetIds, emails, useLiveMail, mailApiBase, loadLiveMailbox])
+
+  const moveToolbar = useCallback(
+    async (target: MailFolder) => {
+      const ids = toolbarTargetIds
+      if (ids.length === 0) return
+      if (useLiveMail && mailApiBase) {
+        const session = getSession()
+        if (!session) return
+        try {
+          const token = getBearerTokenForApi(session)
+          await Promise.all(ids.map((id) => moveMailMessage(mailApiBase, token, id, target)))
+          await loadLiveMailbox()
+        } catch (e) {
+          setMailLoadError(e instanceof Error ? e.message : 'Move failed')
+        }
+        setBulkSelectedIds(new Set())
+        return
+      }
+      setEmails((prev) => prev.map((m) => (ids.includes(m.id) ? { ...m, folder: target } : m)))
+      setBulkSelectedIds(new Set())
+    },
+    [toolbarTargetIds, useLiveMail, mailApiBase, loadLiveMailbox],
   )
 
   const moveTargets = useMemo(() => {
@@ -1169,6 +1314,17 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
           aria-label="Mail folders"
         >
           <div className="cm-sidebar__inner">
+            <div className="cm-sidebar__mobile-head">
+              <span className="cm-sidebar__mobile-head-title">Mail</span>
+              <button
+                type="button"
+                className="cm-icon-btn cm-icon-btn--ghost cm-sidebar__mobile-close"
+                aria-label="Close menu"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <IconClose className="cm-icon" />
+              </button>
+            </div>
             <button
               type="button"
               className="cm-compose"
@@ -1284,15 +1440,16 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
               <p className="cm-sidebar__hint">AWS SES · Draft UI</p>
             </div>
           </div>
-          {sidebarOpen ? (
-            <button
-              type="button"
-              className="cm-sidebar__scrim"
-              aria-label="Close menu"
-              onClick={() => setSidebarOpen(false)}
-            />
-          ) : null}
         </aside>
+
+        {sidebarOpen ? (
+          <button
+            type="button"
+            className="cm-sidebar__scrim"
+            aria-label="Close menu"
+            onClick={() => setSidebarOpen(false)}
+          />
+        ) : null}
 
         <section
           ref={(el) => {
@@ -1305,15 +1462,27 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
           <div className="cm-list-pane">
             <div className="cm-toolbar">
               <label className="cm-toolbar__check">
-                <input type="checkbox" className="cm-checkbox" aria-label="Select all" />
+                <input
+                  ref={selectAllCheckboxRef}
+                  type="checkbox"
+                  className="cm-checkbox"
+                  aria-label="Select all"
+                  checked={allBulkSelected}
+                  onChange={toggleSelectAll}
+                  disabled={listEmails.length === 0}
+                />
               </label>
               <div className="cm-toolbar__actions">
                 <button
                   type="button"
                   className="cm-toolbar__btn"
                   title="Archive (move to Trash from Inbox)"
-                  disabled={!selected || selected.folder !== 'inbox'}
-                  onClick={() => selected && void archiveFromInbox(selected.id)}
+                  disabled={
+                    !toolbarTargetIds.some(
+                      (id) => emails.find((m) => m.id === id)?.folder === 'inbox',
+                    )
+                  }
+                  onClick={() => void archiveToolbar()}
                 >
                   <IconArchive className="cm-icon" />
                   <span className="cm-toolbar__btn-text">Archive</span>
@@ -1321,24 +1490,32 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                 <button
                   type="button"
                   className="cm-toolbar__btn"
-                  title={selected?.folder === 'trash' ? 'Delete permanently' : 'Move to Trash'}
-                  disabled={!selected}
-                  onClick={() => selected && void deleteOrTrashMessage(selected.id)}
+                  title={
+                    toolbarTargetIds.some((id) => emails.find((m) => m.id === id)?.folder === 'trash')
+                      ? 'Delete permanently'
+                      : 'Move to Trash'
+                  }
+                  disabled={toolbarTargetIds.length === 0}
+                  onClick={() => void deleteToolbar()}
                 >
                   <IconTrash className="cm-icon" />
                   <span className="cm-toolbar__btn-text">Delete</span>
                 </button>
-                {selected ? (
+                {toolbarTargetIds.length > 0 ? (
                   <label className="cm-toolbar__move">
                     <IconMove className="cm-icon" />
                     <span className="cm-toolbar__btn-text">Move</span>
                     <select
                       className="cm-move-select"
-                      aria-label="Move selected message"
+                      aria-label={
+                        toolbarTargetIds.length > 1
+                          ? `Move ${toolbarTargetIds.length} messages`
+                          : 'Move selected message'
+                      }
                       value=""
                       onChange={(e) => {
                         const v = e.target.value as MailFolder
-                        if (v) void moveMessage(selected.id, v)
+                        if (v) void moveToolbar(v)
                         e.target.value = ''
                       }}
                     >
@@ -1353,7 +1530,9 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                 ) : null}
               </div>
               <span className="cm-toolbar__meta">
-                {listEmails.length} conversation{listEmails.length === 1 ? '' : 's'}
+                {bulkSelectedIds.size > 0
+                  ? `${bulkSelectedIds.size} selected`
+                  : `${listEmails.length} conversation${listEmails.length === 1 ? '' : 's'}`}
               </span>
             </div>
 
@@ -1365,6 +1544,19 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                     role="option"
                     aria-selected={selectedId === m.id}
                   >
+                    <label
+                      className="cm-row__bulk"
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        className="cm-checkbox"
+                        checked={bulkSelectedIds.has(m.id)}
+                        onChange={() => toggleBulkRow(m.id)}
+                        aria-label={`Select “${m.subject}”`}
+                      />
+                    </label>
                     <button
                       type="button"
                       className="cm-row__star"
