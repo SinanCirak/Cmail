@@ -1,24 +1,54 @@
-# Optional: SES receives mail → S3 ses-inbound/ → Lambda indexes raw/{mailbox}/INBOX/ + DynamoDB.
-# Enable after verifying the domain for receiving in SES and (usually) publishing MX for your mail host.
+# Optional: SES receives mail -> S3 ses-inbound/ -> Lambda indexes raw/{mailbox}/INBOX/ + DynamoDB.
+# Can also publish SES DNS records for domain verification, DKIM, inbound MX, SPF, and DMARC.
 
 data "aws_caller_identity" "current" {}
 
 variable "ses_inbound_enabled" {
   type        = bool
   default     = false
-  description = "Provision SES receipt rule → S3 → Lambda indexer. Requires verified domain + recipients in SES."
+  description = "Provision SES receipt rule -> S3 -> Lambda indexer."
+}
+
+variable "ses_inbound_accept_all" {
+  type        = bool
+  default     = false
+  description = "If true, receipt rule accepts all recipients on the domain. If false, uses ses_inbound_recipients."
+}
+
+variable "ses_mail_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable SES domain identity + DKIM for mail sending (and receiving if ses_inbound_enabled=true)."
 }
 
 variable "ses_inbound_recipients" {
   type        = list(string)
   default     = []
-  description = "Mailbox addresses SES should accept (e.g. [\"sinan@cirak.ca\"]). Domain must verify in SES."
+  description = "Mailbox addresses SES should accept (e.g. [\"sinan@cirak.ca\"]). Used when ses_inbound_accept_all=false."
 }
 
 variable "ses_create_domain_identity" {
   type        = bool
   default     = true
-  description = "Create SES domain identity for var.domain_name (complete DNS TXT verification in SES console)."
+  description = "Create SES domain identity for var.domain_name."
+}
+
+variable "ses_publish_dns_records" {
+  type        = bool
+  default     = true
+  description = "Create Route53 records for SES verification, DKIM, inbound MX, SPF, and DMARC."
+}
+
+variable "ses_spf_record" {
+  type        = string
+  default     = "v=spf1 include:amazonses.com ~all"
+  description = "Root SPF TXT value for domain_name. Set empty string to skip."
+}
+
+variable "ses_dmarc_record" {
+  type        = string
+  default     = "v=DMARC1; p=quarantine; adkim=s; aspf=s"
+  description = "DMARC TXT value for _dmarc.domain_name. Set empty string to skip."
 }
 
 variable "mail_accept_domains" {
@@ -28,12 +58,73 @@ variable "mail_accept_domains" {
 }
 
 locals {
-  ses_inbound_ready = var.ses_inbound_enabled && length(var.ses_inbound_recipients) > 0
+  ses_mail_ready    = var.ses_mail_enabled
+  ses_inbound_ready = var.ses_mail_enabled && var.ses_inbound_enabled && (var.ses_inbound_accept_all || length(var.ses_inbound_recipients) > 0)
 }
 
 resource "aws_ses_domain_identity" "receive" {
-  count  = local.ses_inbound_ready && var.ses_create_domain_identity ? 1 : 0
+  count  = local.ses_mail_ready && var.ses_create_domain_identity ? 1 : 0
   domain = var.domain_name
+}
+
+resource "aws_route53_record" "ses_verify" {
+  count = local.ses_mail_ready && var.ses_create_domain_identity && var.ses_publish_dns_records ? 1 : 0
+
+  allow_overwrite = true
+  zone_id = var.hosted_zone_id
+  name    = "_amazonses.${var.domain_name}"
+  type    = "TXT"
+  ttl     = 300
+  records = [aws_ses_domain_identity.receive[0].verification_token]
+}
+
+resource "aws_ses_domain_dkim" "domain" {
+  count  = local.ses_mail_ready ? 1 : 0
+  domain = var.domain_name
+}
+
+resource "aws_route53_record" "ses_dkim" {
+  count = local.ses_mail_ready && var.ses_publish_dns_records ? 3 : 0
+
+  allow_overwrite = true
+  zone_id = var.hosted_zone_id
+  name    = "${aws_ses_domain_dkim.domain[0].dkim_tokens[count.index]}._domainkey.${var.domain_name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["${aws_ses_domain_dkim.domain[0].dkim_tokens[count.index]}.dkim.amazonses.com"]
+}
+
+resource "aws_route53_record" "ses_inbound_mx" {
+  count = local.ses_inbound_ready && var.ses_publish_dns_records ? 1 : 0
+
+  allow_overwrite = true
+  zone_id = var.hosted_zone_id
+  name    = var.domain_name
+  type    = "MX"
+  ttl     = 300
+  records = ["10 inbound-smtp.${var.aws_region}.amazonaws.com"]
+}
+
+resource "aws_route53_record" "ses_spf" {
+  count = local.ses_mail_ready && var.ses_publish_dns_records && trimspace(var.ses_spf_record) != "" ? 1 : 0
+
+  allow_overwrite = true
+  zone_id = var.hosted_zone_id
+  name    = var.domain_name
+  type    = "TXT"
+  ttl     = 300
+  records = [var.ses_spf_record]
+}
+
+resource "aws_route53_record" "ses_dmarc" {
+  count = local.ses_mail_ready && var.ses_publish_dns_records && trimspace(var.ses_dmarc_record) != "" ? 1 : 0
+
+  allow_overwrite = true
+  zone_id = var.hosted_zone_id
+  name    = "_dmarc.${var.domain_name}"
+  type    = "TXT"
+  ttl     = 300
+  records = [var.ses_dmarc_record]
 }
 
 resource "aws_ses_receipt_rule_set" "inbound" {
@@ -46,7 +137,7 @@ resource "aws_ses_receipt_rule" "to_s3" {
 
   name          = "${var.project_name}-ses-to-s3"
   rule_set_name = aws_ses_receipt_rule_set.inbound[0].rule_set_name
-  recipients    = var.ses_inbound_recipients
+  recipients    = var.ses_inbound_accept_all ? null : var.ses_inbound_recipients
   enabled       = true
 
   s3_action {

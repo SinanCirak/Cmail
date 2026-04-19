@@ -4,6 +4,17 @@ subdomain_name        = "cmail"
 hosted_zone_id        = "ZXXXXXXXXXXXXX"
 cognito_domain_prefix = "cmail-cirak-auth"
 
+# Enable full SES mail stack on this domain:
+# - sending (domain identity + DKIM + SPF + DMARC)
+# - receiving (MX + receipt rule + S3 -> Lambda indexing)
+ses_mail_enabled         = true
+ses_inbound_enabled      = true
+ses_inbound_accept_all   = false
+ses_inbound_recipients   = ["sinan@cirak.ca"]
+ses_publish_dns_records  = true
+# ses_spf_record         = "v=spf1 include:amazonses.com ~all"
+# ses_dmarc_record       = "v=DMARC1; p=quarantine; adkim=s; aspf=s"
+
 # Optional: force explicit CORS origin
 # cors_allow_origin = "https://cmail.cirak.ca"
 

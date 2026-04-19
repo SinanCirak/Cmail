@@ -70,6 +70,7 @@ const STORAGE_FOLDERS = 'cmail-user-folders'
 const STORAGE_THEME = 'cmail-theme'
 const STORAGE_SPLIT = 'cmail-split-list-width'
 const STORAGE_TRUSTED_IMAGE_DOMAINS = 'cmail-trusted-image-domains'
+const LIVE_MAIL_POLL_MS = 8000
 
 function readTrustedImageDomains(): Set<string> {
   try {
@@ -810,6 +811,40 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     if (!useLiveMail) return
     void loadLiveMailbox()
   }, [useLiveMail, loadLiveMailbox])
+
+  useEffect(() => {
+    if (!useLiveMail || !mailApiBase) return
+
+    let running = false
+    const tick = async () => {
+      if (running) return
+      if (document.hidden) return
+      if (!getSession()) return
+      running = true
+      try {
+        await loadLiveMailbox()
+      } finally {
+        running = false
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void tick()
+    }, LIVE_MAIL_POLL_MS)
+
+    const onFocus = () => {
+      void tick()
+    }
+
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [useLiveMail, mailApiBase, loadLiveMailbox])
 
   useEffect(() => {
     if (!useLiveMail || !mailApiBase || !selected?.s3Key) return
