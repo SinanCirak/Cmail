@@ -70,6 +70,7 @@ const STORAGE_FOLDERS = 'cmail-user-folders'
 const STORAGE_THEME = 'cmail-theme'
 const STORAGE_SPLIT = 'cmail-split-list-width'
 const STORAGE_TRUSTED_IMAGE_DOMAINS = 'cmail-trusted-image-domains'
+const STORAGE_READ_PREFIX = 'cmail-read-ids:'
 const LIVE_MAIL_POLL_MS = 8000
 
 function readTrustedImageDomains(): Set<string> {
@@ -492,6 +493,28 @@ function emailFromIdToken(): string | null {
   }
 }
 
+function readReadIds(mailboxEmail: string | null): Set<string> {
+  if (!mailboxEmail) return new Set()
+  try {
+    const raw = localStorage.getItem(`${STORAGE_READ_PREFIX}${mailboxEmail.toLowerCase()}`)
+    if (!raw) return new Set()
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((x): x is string => typeof x === 'string' && x.length > 0))
+  } catch {
+    return new Set()
+  }
+}
+
+function saveReadIds(mailboxEmail: string | null, ids: Set<string>) {
+  if (!mailboxEmail) return
+  try {
+    localStorage.setItem(`${STORAGE_READ_PREFIX}${mailboxEmail.toLowerCase()}`, JSON.stringify([...ids]))
+  } catch {
+    /* ignore */
+  }
+}
+
 function filterBySearch(emails: MailMessage[], q: string): MailMessage[] {
   const s = q.trim().toLowerCase()
   if (!s) return emails
@@ -513,6 +536,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const useLiveMail = mailApiConfigured()
   const mailApiBase = mailApiBaseUrl()
   const fetchedBodyIds = useRef<Set<string>>(new Set())
+  const mailboxEmail = (emailFromIdToken() ?? '').toLowerCase() || null
 
   const [emails, setEmails] = useState<MailMessage[]>(() =>
     mailApiConfigured() ? [] : [...mockEmails],
@@ -566,6 +590,17 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
 
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [readMessageIds, setReadMessageIds] = useState<Set<string>>(() => readReadIds(mailboxEmail))
+  const readMessageIdsRef = useRef<Set<string>>(readMessageIds)
+
+  useEffect(() => {
+    setReadMessageIds(readReadIds(mailboxEmail))
+  }, [mailboxEmail])
+
+  useEffect(() => {
+    readMessageIdsRef.current = readMessageIds
+    saveReadIds(mailboxEmail, readMessageIds)
+  }, [mailboxEmail, readMessageIds])
 
   useEffect(() => {
     try {
@@ -778,32 +813,63 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const openMail = useCallback((id: string) => {
     setBulkSelectedIds(new Set())
     setSelectedId(id)
+    setReadMessageIds((prev) => {
+      if (prev.has(id)) return prev
+      const next = new Set(prev)
+      next.add(id)
+      return next
+    })
     setEmails((prev) =>
       prev.map((m) => (m.id === id ? { ...m, read: true } : m)),
     )
     setMobileShowDetail(true)
   }, [])
 
-  const loadLiveMailbox = useCallback(async () => {
+  const loadLiveMailbox = useCallback(async (opts?: { silent?: boolean }) => {
     if (!useLiveMail || !mailApiBase) return
+    const silent = opts?.silent === true
     const session = getSession()
     if (!session) {
       setMailLoadError('Sign in to load your mail from the archive.')
       return
     }
-    setMailLoading(true)
-    setMailLoadError(null)
-    fetchedBodyIds.current.clear()
+    if (!silent) {
+      setMailLoading(true)
+      setMailLoadError(null)
+    }
     try {
       const token = getBearerTokenForApi(session)
       const folders = await fetchUserFolders(mailApiBase, token)
       setUserFolders(folders)
       const list = await fetchLiveMailbox(mailApiBase, token, folders)
-      setEmails(list)
+      const readSet = readMessageIdsRef.current
+      setEmails((prev) => {
+        const prevById = new Map(prev.map((m) => [m.id, m]))
+        return list.map((m) => {
+          const old = prevById.get(m.id)
+          const read = m.folder === 'inbox' ? (old?.read ?? false) || readSet.has(m.id) : true
+          return {
+            ...m,
+            read,
+            body: old?.body ?? m.body,
+            bodyIsHtml: old?.bodyIsHtml ?? m.bodyIsHtml,
+            to: old?.to?.length ? old.to : m.to,
+            cc: old?.cc?.length ? old.cc : m.cc,
+            bcc: old?.bcc?.length ? old.bcc : m.bcc,
+            attachments: old?.attachments?.length ? old.attachments : m.attachments,
+            inlineImages: old?.inlineImages?.length ? old.inlineImages : m.inlineImages,
+            starred: old?.starred ?? m.starred,
+          }
+        })
+      })
     } catch (e) {
-      setMailLoadError(e instanceof Error ? e.message : 'Could not load mail.')
+      if (!silent) {
+        setMailLoadError(e instanceof Error ? e.message : 'Could not load mail.')
+      }
     } finally {
-      setMailLoading(false)
+      if (!silent) {
+        setMailLoading(false)
+      }
     }
   }, [useLiveMail, mailApiBase])
 
@@ -822,7 +888,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
       if (!getSession()) return
       running = true
       try {
-        await loadLiveMailbox()
+        await loadLiveMailbox({ silent: true })
       } finally {
         running = false
       }
