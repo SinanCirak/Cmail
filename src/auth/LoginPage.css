@@ -1,8 +1,10 @@
 .cm-login {
   min-height: 100svh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: 1.5rem;
+  padding: max(1.5rem, env(safe-area-inset-top, 0px)) max(1.5rem, env(safe-area-inset-right, 0px))
+    max(1.5rem, env(safe-area-inset-bottom, 0px)) max(1.5rem, env(safe-area-inset-left, 0px));
   position: relative;
   overflow: hidden;
   font-family: 'Plus Jakarta Sans', system-ui, sans-serif;

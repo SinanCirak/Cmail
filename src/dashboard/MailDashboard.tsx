@@ -1,4 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react'
 import { getBearerTokenForApi, getSession } from '../auth/cognito'
 import { mockEmails } from '../data/mockEmails'
 import {
@@ -1291,7 +1300,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
           }}
           className={`cm-panes ${mobileShowDetail ? 'cm-panes--detail' : ''}`}
           aria-label="Mail content"
-          style={{ gridTemplateColumns: `minmax(280px, ${listWidth}px) 10px 1fr` }}
+          style={{ '--cm-list-pane-width': `${listWidth}px` } as CSSProperties}
         >
           <div className="cm-list-pane">
             <div className="cm-toolbar">

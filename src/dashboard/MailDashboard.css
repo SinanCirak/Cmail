@@ -2,6 +2,9 @@
 
 .cm-shell {
   --cm-topbar-height: 3.35rem;
+  --cm-safe-left: env(safe-area-inset-left, 0px);
+  --cm-safe-right: env(safe-area-inset-right, 0px);
+  --cm-safe-bottom: env(safe-area-inset-bottom, 0px);
   --cm-accent: #0ea5e9;
   --cm-accent-strong: #0284c7;
   --cm-accent-soft: rgba(14, 165, 233, 0.12);
@@ -36,7 +39,8 @@
   display: flex;
   align-items: center;
   gap: 1rem;
-  padding: 0.65rem 1rem;
+  padding: max(0.65rem, env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px)) 0.65rem
+    max(1rem, env(safe-area-inset-left, 0px));
   min-height: var(--cm-topbar-height);
   box-sizing: border-box;
   background: var(--cm-surface);
@@ -493,7 +497,9 @@
 .cm-panes {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(280px, 380px) 10px 1fr;
+  /* --cm-list-pane-width set inline from React (resizable list); must not use inline grid-template (breaks mobile) */
+  --cm-list-pane-width: 360px;
+  grid-template-columns: minmax(260px, min(var(--cm-list-pane-width), 100%)) 10px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -1519,10 +1525,20 @@
 
   .cm-fab {
     display: inline-flex;
+    right: max(1rem, calc(1.25rem + env(safe-area-inset-right, 0px)));
+    bottom: max(1rem, calc(1.25rem + env(safe-area-inset-bottom, 0px)));
   }
 
   .cm-search {
     max-width: none;
+  }
+
+  .cm-list-pane {
+    border-right: none;
+  }
+
+  .cm-sidebar__inner {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -1563,9 +1579,125 @@
 
   .cm-compose-modal__panel {
     width: 100%;
-    max-height: 100svh;
+    max-height: calc(100svh - env(safe-area-inset-bottom, 0px));
     border-radius: var(--cm-radius) var(--cm-radius) 0 0;
     margin-top: auto;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+/* Phones: stack search under header row so toolbar icons stay reachable */
+@media (max-width: 560px) {
+  .cm-topbar {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: auto auto;
+    column-gap: 0.45rem;
+    row-gap: 0.45rem;
+    align-items: center;
+  }
+
+  .cm-topbar__left {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .cm-topbar__right {
+    grid-column: 3;
+    grid-row: 1;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.15rem;
+  }
+
+  .cm-search {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: none;
+    width: 100%;
+    margin: 0;
+  }
+
+  .cm-brand__text {
+    display: none;
+  }
+
+  .cm-toolbar__meta {
+    display: none;
+  }
+
+  .cm-read__participants {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .cm-read__when {
+    align-self: flex-start;
+  }
+
+  .cm-read__images-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .cm-read__images-banner__actions {
+    justify-content: stretch;
+  }
+
+  .cm-read__images-banner__actions .cm-btn {
+    flex: 1;
+    justify-content: center;
+  }
+}
+
+/* Settings / full-screen overlays on narrow viewports */
+@media (max-width: 640px) {
+  .cm-modal {
+    padding: 0;
+    align-items: stretch;
+    justify-content: stretch;
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+
+  .cm-modal__panel {
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    min-height: 0;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+
+  .cm-modal__head {
+    padding-top: max(1rem, env(safe-area-inset-top, 0px));
+  }
+
+  .cm-modal__body {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Larger tap targets on touch devices */
+@media (pointer: coarse) {
+  .cm-nav__item {
+    min-height: 44px;
+    padding-top: 0.65rem;
+    padding-bottom: 0.65rem;
+  }
+
+  .cm-toolbar__btn {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .cm-row__star {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 
@@ -1682,6 +1814,8 @@
 .cm-modal__body {
   padding: 0.75rem 1rem 1rem;
   overflow: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .cm-tabs {
