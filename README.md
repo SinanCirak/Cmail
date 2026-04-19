@@ -111,14 +111,14 @@ Optional: set `mail_sync_iam_user_name` in `terraform.tfvars` to auto-attach the
 
 #### IMAP import (e.g. WorkMail) — run from your PC or a jump host
 
-Windows (recommended): repo kökünde çalıştır — şifre güvenli sorulur:
+Windows (recommended): run from the repository root — the script prompts for IMAP user (if `IMAP_USER` is unset) and password securely:
 
 ```powershell
 cd E:\WORK\Cmail
 .\scripts\run_imap_sync.ps1
 ```
 
-Manuel ortam değişkenleri:
+Manual environment setup:
 
 ```bash
 python -m venv .venv-imap
@@ -128,18 +128,18 @@ pip install -r scripts/requirements-imap-sync.txt
 export AWS_REGION=ca-central-1
 export MAIL_ARCHIVE_BUCKET=$(cd terraform && terraform output -raw mail_data_bucket_name)
 export MAIL_METADATA_TABLE=$(cd terraform && terraform output -raw mail_metadata_table_name)
-export IMAP_HOST=imap.mail.us-east-1.awsapps.com   # Bu org için WorkMail region = us-east-1
+export IMAP_HOST=imap.mail.us-east-1.awsapps.com   # Use the IMAP host for your WorkMail region
 export IMAP_USER=you@cirak.ca
 export IMAP_PASSWORD=*** 
 
 python scripts/imap_to_mail_archive.py
 ```
 
-İlk çalıştırma için **LIST kullanılmaz** (WorkMail’de sık sık takılması nedeniyle); bunun yerine yaygın klasör adları (`INBOX`, `Sent Items`, …) tek tek denenir. Kendi klasör listeni vermek için:
+On the first run **LIST is disabled** (many WorkMail servers hang on LIST); common folder names (`INBOX`, `Sent Items`, …) are tried instead. To pass your own folder list:
 
-`export IMAP_FOLDERS='INBOX,Sent Items,Özel Klasör'`  
+`export IMAP_FOLDERS='INBOX,Sent Items,Custom Folder'`  
 
-Tüm klasörleri sunucudan otomatik bulmak için `IMAP_USE_LIST=1` (yavaş veya takılırsa kapatın).
+To discover folders from the server, set `IMAP_USE_LIST=1` (turn it off if sync is slow or stalls).
 
 First run downloads all messages per folder; later runs only fetch new UIDs (state in `.imap_mail_state.json`). Set `SKIP_DYNAMODB=1` to upload S3 only.
 
