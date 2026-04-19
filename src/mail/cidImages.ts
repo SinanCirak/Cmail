@@ -18,10 +18,16 @@ export function normalizeCidKey(raw: string): string {
 export function injectCidIntoHtml(html: string, images: InlineImagePart[]): string {
   if (!images.length) return html
   const map = new Map<string, string>()
+  const register = (cidField: string, dataUrl: string) => {
+    const primary = normalizeCidKey(cidField)
+    if (!primary) return
+    map.set(primary, dataUrl)
+    const at = primary.indexOf('@')
+    if (at > 0) map.set(primary.slice(0, at), dataUrl)
+  }
   for (const img of images) {
-    const key = normalizeCidKey(img.cid)
     const mime = img.contentType?.trim() || 'application/octet-stream'
-    map.set(key, `data:${mime};base64,${img.contentBase64}`)
+    register(img.cid, `data:${mime};base64,${img.contentBase64}`)
   }
   return html.replace(/\bcid:([^\s"'<>]+)/gi, (full, ref: string) => {
     const key = normalizeCidKey(ref)

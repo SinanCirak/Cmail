@@ -405,6 +405,12 @@
   color: rgba(248, 250, 252, 0.45);
 }
 
+.cm-user-folders__hint {
+  margin: -0.15rem 0 0.35rem;
+  padding: 0 0.5rem;
+  max-width: 22rem;
+}
+
 .cm-user-folders__add {
   display: flex;
   align-items: center;
@@ -1642,7 +1648,7 @@
   background: var(--cm-surface);
   border: 1px solid var(--cm-border);
   border-radius: var(--cm-radius);
-  box-shadow: var(--cm-shadow);
+  box-shadow: var(--cm-shadow), 0 24px 48px rgba(15, 23, 42, 0.12);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1680,13 +1686,44 @@
 
 .cm-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.4rem;
   padding: 0.25rem;
   background: var(--cm-surface-2);
   border: 1px solid var(--cm-border);
   border-radius: 999px;
   width: fit-content;
+  max-width: 100%;
   margin-bottom: 1rem;
+}
+
+.cm-trusted-domains {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  border: 1px solid var(--cm-border);
+  border-radius: var(--cm-radius-sm);
+  overflow: hidden;
+}
+
+.cm-trusted-domains__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--cm-border);
+  font-size: 0.88rem;
+}
+
+.cm-trusted-domains__row:last-child {
+  border-bottom: none;
+}
+
+.cm-trusted-domains__domain {
+  font-family: var(--cm-mono);
+  font-size: 0.82rem;
+  color: var(--cm-text-heading);
 }
 
 .cm-tab {

@@ -366,10 +366,15 @@ def _extract_inline_images(msg: Message) -> list[dict]:
         if not ctype.startswith("image/"):
             continue
         cid_raw = part.get("Content-ID")
-        if not cid_raw:
+        cid_str = str(cid_raw).strip() if cid_raw else ""
+        fname = (part.get_filename() or "").strip()
+        disp = (part.get_content_disposition() or "").lower()
+        if cid_str:
+            norm = _normalize_cid_header(cid_str)
+        elif fname and disp == "inline":
+            norm = _normalize_cid_header(fname)
+        else:
             continue
-        cid_str = str(cid_raw).strip()
-        norm = _normalize_cid_header(cid_str)
         if not norm or norm in seen:
             continue
         try:

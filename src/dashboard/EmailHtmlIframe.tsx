@@ -70,7 +70,7 @@ export function EmailHtmlIframe({
     doc.write(shell)
     doc.close()
     if (!doc.body) return
-    doc.body.innerHTML = html
+    doc.body.innerHTML = resolvedHtml
 
     const syncHeight = () => {
       const h = Math.max(doc.body?.scrollHeight ?? 0, 120)

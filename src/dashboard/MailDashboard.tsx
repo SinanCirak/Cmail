@@ -79,7 +79,7 @@ function emailDomainFromAddress(addr: string): string {
   return addr.slice(i + 1).trim().toLowerCase()
 }
 
-type SettingsTab = 'account' | 'security' | 'appearance'
+type SettingsTab = 'account' | 'security' | 'appearance' | 'privacy'
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n))
@@ -109,11 +109,23 @@ function SettingsModal(props: {
   onClose: () => void
   theme: 'light' | 'dark'
   onToggleTheme: () => void
+  primaryEmail: string | null
+  trustedDomains: string[]
+  onRemoveTrustedDomain: (domain: string) => void
+  onClearTrustedDomains: () => void
 }) {
-  const { open, onClose, theme, onToggleTheme } = props
+  const {
+    open,
+    onClose,
+    theme,
+    onToggleTheme,
+    primaryEmail,
+    trustedDomains,
+    onRemoveTrustedDomain,
+    onClearTrustedDomains,
+  } = props
   const [tab, setTab] = useState<SettingsTab>('account')
-  const [name, setName] = useState('Owner Person')
-  const [email, setEmail] = useState('owner@example.com')
+  const [displayName, setDisplayName] = useState('')
 
   const [currentPw, setCurrentPw] = useState('')
   const [newPw, setNewPw] = useState('')
@@ -170,7 +182,7 @@ function SettingsModal(props: {
         <div className="cm-modal__head">
           <div className="cm-modal__title-wrap">
             <h2 className="cm-modal__title">Settings</h2>
-            <p className="cm-modal__subtitle">Account, security, and appearance</p>
+            <p className="cm-modal__subtitle">Account, password, privacy, and display</p>
           </div>
           <button type="button" className="cm-icon-btn" aria-label="Close settings" onClick={onClose}>
             <IconClose className="cm-icon" />
@@ -206,6 +218,15 @@ function SettingsModal(props: {
             >
               Appearance
             </button>
+            <button
+              type="button"
+              className={`cm-tab ${tab === 'privacy' ? 'cm-tab--active' : ''}`}
+              role="tab"
+              aria-selected={tab === 'privacy'}
+              onClick={() => setTab('privacy')}
+            >
+              Privacy
+            </button>
           </div>
 
           {tab === 'account' ? (
@@ -215,14 +236,28 @@ function SettingsModal(props: {
                 <div className="cm-settings__grid">
                   <label className="cm-field">
                     <span className="cm-field__label">Display name</span>
-                    <input className="cm-field__input" value={name} onChange={(e) => setName(e.target.value)} />
+                    <input
+                      className="cm-field__input"
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      placeholder="Your name"
+                      autoComplete="name"
+                    />
                   </label>
                   <label className="cm-field">
                     <span className="cm-field__label">Email</span>
-                    <input className="cm-field__input" value={email} onChange={(e) => setEmail(e.target.value)} />
+                    <input
+                      className="cm-field__input"
+                      readOnly
+                      value={primaryEmail ?? ''}
+                      placeholder="Sign in to see your email"
+                    />
                   </label>
                 </div>
-                <p className="cm-settings__note">Demo-only values. Connect to your identity provider when ready.</p>
+                <p className="cm-settings__note">
+                  Email comes from your sign-in session. Display name is stored only in this browser until profiles
+                  are wired to your directory.
+                </p>
               </div>
             </div>
           ) : null}
@@ -304,6 +339,44 @@ function SettingsModal(props: {
                     Toggle theme
                   </button>
                 </div>
+              </div>
+            </div>
+          ) : null}
+
+          {tab === 'privacy' ? (
+            <div className="cm-settings">
+              <div className="cm-settings__section">
+                <h3 className="cm-settings__h">Embedded images</h3>
+                <p className="cm-settings__note">
+                  Mail bodies can reference inline (CID) images. Those bytes stay on our servers until you choose to
+                  render them. Domains you approve load logos and signatures automatically next time.
+                </p>
+                {trustedDomains.length === 0 ? (
+                  <p className="cm-settings__v">No domains are trusted yet. Use “Always show from @domain” when
+                    reading a message.</p>
+                ) : (
+                  <ul className="cm-trusted-domains">
+                    {trustedDomains.map((d) => (
+                      <li key={d} className="cm-trusted-domains__row">
+                        <span className="cm-trusted-domains__domain">@{d}</span>
+                        <button
+                          type="button"
+                          className="cm-btn cm-btn--ghost cm-btn--sm"
+                          onClick={() => onRemoveTrustedDomain(d)}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {trustedDomains.length > 0 ? (
+                  <div className="cm-settings__actions">
+                    <button type="button" className="cm-btn cm-btn--ghost" onClick={() => onClearTrustedDomains()}>
+                      Clear all trusted domains
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -585,6 +658,30 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
       return n
     })
   }, [selected])
+
+  const removeTrustedDomain = useCallback((domain: string) => {
+    const d = domain.trim().toLowerCase()
+    if (!d) return
+    setTrustedImageDomains((prev) => {
+      const n = new Set(prev)
+      n.delete(d)
+      try {
+        localStorage.setItem(STORAGE_TRUSTED_IMAGE_DOMAINS, JSON.stringify([...n]))
+      } catch {
+        /* ignore */
+      }
+      return n
+    })
+  }, [])
+
+  const clearTrustedDomains = useCallback(() => {
+    setTrustedImageDomains(new Set())
+    try {
+      localStorage.removeItem(STORAGE_TRUSTED_IMAGE_DOMAINS)
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   useEffect(() => {
     setSelectedId((prev) => {
@@ -1113,6 +1210,9 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                   <IconFolderPlus className="cm-icon cm-icon--sm" />
                 </button>
               </div>
+              <p className="cm-sidebar__hint cm-user-folders__hint">
+                Labels live in your mailbox index (not empty S3 paths). Move messages here to fill a folder.
+              </p>
               {newFolderOpen ? (
                 <div className="cm-new-folder">
                   <input
@@ -1722,6 +1822,10 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
         onClose={() => setSettingsOpen(false)}
         theme={theme}
         onToggleTheme={toggleTheme}
+        primaryEmail={emailFromIdToken()}
+        trustedDomains={[...trustedImageDomains].sort((a, b) => a.localeCompare(b))}
+        onRemoveTrustedDomain={removeTrustedDomain}
+        onClearTrustedDomains={clearTrustedDomains}
       />
     </div>
   )
