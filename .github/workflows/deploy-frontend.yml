@@ -3,7 +3,8 @@
 # Required GitHub repository secrets:
 #   AWS_ACCESS_KEY_ID
 #   AWS_SECRET_ACCESS_KEY
-#   AWS_REGION                     (e.g. ca-central-1)
+# Optional override:
+#   AWS_REGION                     (defaults to ca-central-1 if unset)
 #   S3_SITE_BUCKET                 (target bucket name)
 #   CLOUDFRONT_DISTRIBUTION_ID
 #   VITE_COGNITO_REGION
@@ -65,7 +66,8 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          # Empty secret would fail the action; default matches typical deploy region.
+          aws-region: ${{ secrets.AWS_REGION || 'ca-central-1' }}
 
       - name: Sync to S3
         run: aws s3 sync dist/ "s3://${{ secrets.S3_SITE_BUCKET }}/" --delete
