@@ -4,9 +4,8 @@
 
 **Tech Stack:** AWS (SES, Lambda, API Gateway, DynamoDB, S3, CloudFront, Route 53, Cognito), Terraform, React, TypeScript, Vite, GitHub Actions
 
-Cmail is a serverless email and file management system built on AWS.
-It provides a lightweight alternative to traditional mailbox stacks by using S3, Lambda, and API Gateway as the core platform.
-This project is built as a serverless alternative to traditional email systems, especially with the upcoming deprecation of Amazon WorkMail.
+Cmail is a serverless email and file management system built on AWS, designed as a scalable and cost-efficient alternative to traditional email infrastructures.
+Built in response to the deprecation of Amazon WorkMail.
 
 ## 📈 Impact
 
@@ -99,6 +98,13 @@ flowchart LR
 - **Serverless API** to scale with demand and keep operational overhead low.
 - **DynamoDB metadata index** for fast mailbox/folder queries while keeping MIME payloads in S3.
 - **Terraform-first infrastructure** for reproducible, auditable setup.
+
+## ⚙️ Design Principles
+
+- **Serverless-first architecture:** automatic scaling with pay-per-use cost profile.
+- **Secure API boundary:** no direct privileged S3 exposure from the frontend.
+- **Event-driven processing:** inbound indexing and archive workflows handled by Lambda triggers.
+- **Expansion-ready model:** structured to support broader multi-tenant growth patterns.
 
 ## 💡 Key Design Decisions
 
@@ -304,6 +310,14 @@ Cmail/
 - IMAP-compatible bridge for legacy clients
 - Enhanced multi-tenant mailbox administration
 - Extended auth hardening and policy controls
+
+## 🚀 Roadmap
+
+- Email receiving via SES
+- IMAP-like interface
+- Cognito authentication hardening and policy depth
+- Presigned download URLs
+- Multi-user support and tenant-aware administration
 
 ## 👤 Author
 
