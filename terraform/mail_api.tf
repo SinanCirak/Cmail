@@ -90,6 +90,7 @@ locals {
     "POST /mail/user-folders",
     "DELETE /mail/user-folders/{folderId}",
     "PATCH /mail/message",
+    "PATCH /mail/messages/read",
     "DELETE /mail/message",
     "POST /mail/send",
   ])

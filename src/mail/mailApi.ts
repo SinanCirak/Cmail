@@ -200,6 +200,29 @@ export async function deleteMailMessage(apiBase: string, token: string, sk: stri
   }
 }
 
+export async function markMailMessagesReadState(
+  apiBase: string,
+  token: string,
+  sks: string[],
+  read: boolean,
+): Promise<void> {
+  const uniq = [...new Set(sks.filter(Boolean))]
+  if (uniq.length === 0) return
+  const res = await fetch(`${apiBase}/mail/messages/read`, {
+    ...noCache,
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ sks: uniq, read }),
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(t || `HTTP ${res.status}`)
+  }
+}
+
 export type MailContentPayload = {
   body: string
   isHtml: boolean

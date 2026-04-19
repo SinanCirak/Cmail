@@ -8,7 +8,14 @@ import {
   useState,
   type CSSProperties,
 } from 'react'
-import { getBearerTokenForApi, getSession } from '../auth/cognito'
+import {
+  changePasswordWithSession,
+  getBearerTokenForApi,
+  getDisplayNameFromSession,
+  getSession,
+  saveSession,
+  updateDisplayNameWithSession,
+} from '../auth/cognito'
 import { mockEmails } from '../data/mockEmails'
 import {
   createUserFolderApi,
@@ -19,6 +26,7 @@ import {
   fetchUserFolders,
   mailApiBaseUrl,
   mailApiConfigured,
+  markMailMessagesReadState,
   encodeFilesForMail,
   moveMailMessage,
   sendMailMessage,
@@ -70,7 +78,6 @@ const STORAGE_FOLDERS = 'cmail-user-folders'
 const STORAGE_THEME = 'cmail-theme'
 const STORAGE_SPLIT = 'cmail-split-list-width'
 const STORAGE_TRUSTED_IMAGE_DOMAINS = 'cmail-trusted-image-domains'
-const STORAGE_READ_PREFIX = 'cmail-read-ids:'
 const LIVE_MAIL_POLL_MS = 8000
 
 function readTrustedImageDomains(): Set<string> {
@@ -121,6 +128,8 @@ function SettingsModal(props: {
   theme: 'light' | 'dark'
   onToggleTheme: () => void
   primaryEmail: string | null
+  initialDisplayName: string
+  onDisplayNameSaved: (name: string) => void
   trustedDomains: string[]
   onRemoveTrustedDomain: (domain: string) => void
   onClearTrustedDomains: () => void
@@ -131,16 +140,22 @@ function SettingsModal(props: {
     theme,
     onToggleTheme,
     primaryEmail,
+    initialDisplayName,
+    onDisplayNameSaved,
     trustedDomains,
     onRemoveTrustedDomain,
     onClearTrustedDomains,
   } = props
   const [tab, setTab] = useState<SettingsTab>('account')
   const [displayName, setDisplayName] = useState('')
+  const [profileBusy, setProfileBusy] = useState(false)
+  const [profileStatus, setProfileStatus] = useState<'idle' | 'error' | 'success'>('idle')
+  const [profileMsg, setProfileMsg] = useState('')
 
   const [currentPw, setCurrentPw] = useState('')
   const [newPw, setNewPw] = useState('')
   const [confirmPw, setConfirmPw] = useState('')
+  const [pwBusy, setPwBusy] = useState(false)
   const [pwStatus, setPwStatus] = useState<'idle' | 'error' | 'success'>('idle')
   const [pwMsg, setPwMsg] = useState('')
 
@@ -155,14 +170,47 @@ function SettingsModal(props: {
 
   useEffect(() => {
     if (!open) return
+    setDisplayName(initialDisplayName || '')
+    setProfileStatus('idle')
+    setProfileMsg('')
     setPwStatus('idle')
     setPwMsg('')
     setCurrentPw('')
     setNewPw('')
     setConfirmPw('')
-  }, [open, tab])
+  }, [open, tab, initialDisplayName])
 
-  const submitPassword = useCallback(() => {
+  const saveProfile = useCallback(async () => {
+    const name = displayName.trim()
+    if (!name) {
+      setProfileStatus('error')
+      setProfileMsg('Display name is required.')
+      return
+    }
+    const session = getSession()
+    if (!session) {
+      setProfileStatus('error')
+      setProfileMsg('Sign in again and retry.')
+      return
+    }
+    setProfileBusy(true)
+    setProfileStatus('idle')
+    setProfileMsg('')
+    try {
+      const updated = await updateDisplayNameWithSession(session, name)
+      saveSession(updated)
+      onDisplayNameSaved(name)
+      setProfileStatus('success')
+      setProfileMsg('Profile saved.')
+    } catch (e) {
+      setProfileStatus('error')
+      setProfileMsg(e instanceof Error ? e.message : 'Could not save profile.')
+    } finally {
+      setProfileBusy(false)
+    }
+  }, [displayName, onDisplayNameSaved])
+
+  const submitPassword = useCallback(async () => {
     const cur = currentPw.trim()
     const np = newPw.trim()
     const cp = confirmPw.trim()
@@ -181,8 +229,28 @@ function SettingsModal(props: {
       setPwMsg('New password and confirmation do not match.')
       return
     }
-    setPwStatus('success')
-    setPwMsg('Password updated (demo). Wire this to your auth API.')
+    const session = getSession()
+    if (!session) {
+      setPwStatus('error')
+      setPwMsg('Sign in again and retry.')
+      return
+    }
+    setPwBusy(true)
+    setPwStatus('idle')
+    setPwMsg('')
+    try {
+      await changePasswordWithSession(session, cur, np)
+      setPwStatus('success')
+      setPwMsg('Password updated.')
+      setCurrentPw('')
+      setNewPw('')
+      setConfirmPw('')
+    } catch (e) {
+      setPwStatus('error')
+      setPwMsg(e instanceof Error ? e.message : 'Could not update password.')
+    } finally {
+      setPwBusy(false)
+    }
   }, [currentPw, newPw, confirmPw])
 
   if (!open) return null
@@ -265,10 +333,28 @@ function SettingsModal(props: {
                     />
                   </label>
                 </div>
-                <p className="cm-settings__note">
-                  Email comes from your sign-in session. Display name is stored only in this browser until profiles
-                  are wired to your directory.
-                </p>
+                {profileStatus !== 'idle' ? (
+                  <div className={`cm-alert ${profileStatus === 'success' ? 'cm-alert--ok' : 'cm-alert--err'}`} role="status">
+                    {profileMsg}
+                  </div>
+                ) : null}
+                <div className="cm-settings__actions">
+                  <button type="button" className="cm-btn cm-btn--primary" onClick={() => void saveProfile()} disabled={profileBusy}>
+                    {profileBusy ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    className="cm-btn cm-btn--ghost"
+                    onClick={() => {
+                      setDisplayName(initialDisplayName || '')
+                      setProfileStatus('idle')
+                      setProfileMsg('')
+                    }}
+                    disabled={profileBusy}
+                  >
+                    Discard
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}
@@ -316,12 +402,13 @@ function SettingsModal(props: {
                   </div>
                 ) : null}
                 <div className="cm-settings__actions">
-                  <button type="button" className="cm-btn cm-btn--primary" onClick={submitPassword}>
-                    Update password
+                  <button type="button" className="cm-btn cm-btn--primary" onClick={() => void submitPassword()} disabled={pwBusy}>
+                    {pwBusy ? 'Saving…' : 'Save'}
                   </button>
                   <button
                     type="button"
                     className="cm-btn cm-btn--ghost"
+                    disabled={pwBusy}
                     onClick={() => {
                       setCurrentPw('')
                       setNewPw('')
@@ -330,7 +417,7 @@ function SettingsModal(props: {
                       setPwMsg('')
                     }}
                   >
-                    Clear
+                    Discard
                   </button>
                 </div>
               </div>
@@ -493,28 +580,6 @@ function emailFromIdToken(): string | null {
   }
 }
 
-function readReadIds(mailboxEmail: string | null): Set<string> {
-  if (!mailboxEmail) return new Set()
-  try {
-    const raw = localStorage.getItem(`${STORAGE_READ_PREFIX}${mailboxEmail.toLowerCase()}`)
-    if (!raw) return new Set()
-    const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed)) return new Set()
-    return new Set(parsed.filter((x): x is string => typeof x === 'string' && x.length > 0))
-  } catch {
-    return new Set()
-  }
-}
-
-function saveReadIds(mailboxEmail: string | null, ids: Set<string>) {
-  if (!mailboxEmail) return
-  try {
-    localStorage.setItem(`${STORAGE_READ_PREFIX}${mailboxEmail.toLowerCase()}`, JSON.stringify([...ids]))
-  } catch {
-    /* ignore */
-  }
-}
-
 function filterBySearch(emails: MailMessage[], q: string): MailMessage[] {
   const s = q.trim().toLowerCase()
   if (!s) return emails
@@ -532,28 +597,36 @@ function filterBySearch(emails: MailMessage[], q: string): MailMessage[] {
   })
 }
 
-function normalizeThreadSubject(subject: string): string {
+function normalizeThreadSubject(subject: string): { normalized: string; hadReplyPrefix: boolean } {
   let s = (subject || '').trim().toLowerCase()
+  let hadReplyPrefix = false
   // Collapse common reply/forward prefixes so "Re: Re: X" and "Fwd: X" group together.
   while (true) {
     const next = s.replace(/^(re|fw|fwd)\s*:\s*/i, '').trim()
     if (next === s) break
+    hadReplyPrefix = true
     s = next
   }
-  return s || '(no subject)'
+  return { normalized: s || '(no subject)', hadReplyPrefix }
 }
 
 function threadKeyForMessage(m: MailMessage): string {
   const subj = normalizeThreadSubject(m.subject)
+  // Only group explicit reply/forward chains. Repeated standalone campaigns
+  // with identical subject (same sender) should remain separate rows.
+  if (!subj.hadReplyPrefix) {
+    return `single::${m.id}`
+  }
   // Keep grouping conservative: same mailbox folder + normalized subject.
-  return `${m.folder}::${subj}`
+  return `${m.folder}::${subj.normalized}`
 }
 
 export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const useLiveMail = mailApiConfigured()
   const mailApiBase = mailApiBaseUrl()
   const fetchedBodyIds = useRef<Set<string>>(new Set())
-  const mailboxEmail = (emailFromIdToken() ?? '').toLowerCase() || null
+  const currentEmail = emailFromIdToken()
+  const [accountDisplayName, setAccountDisplayName] = useState(() => getDisplayNameFromSession(getSession()))
 
   const [emails, setEmails] = useState<MailMessage[]>(() =>
     mailApiConfigured() ? [] : [...mockEmails],
@@ -607,17 +680,6 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
 
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
-  const [readMessageIds, setReadMessageIds] = useState<Set<string>>(() => readReadIds(mailboxEmail))
-  const readMessageIdsRef = useRef<Set<string>>(readMessageIds)
-
-  useEffect(() => {
-    setReadMessageIds(readReadIds(mailboxEmail))
-  }, [mailboxEmail])
-
-  useEffect(() => {
-    readMessageIdsRef.current = readMessageIds
-    saveReadIds(mailboxEmail, readMessageIds)
-  }, [mailboxEmail, readMessageIds])
 
   useEffect(() => {
     try {
@@ -843,20 +905,24 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     })
   }, [])
 
-  const openMail = useCallback((id: string) => {
+  const openMail = useCallback(async (id: string) => {
     setBulkSelectedIds(new Set())
     setSelectedId(id)
-    setReadMessageIds((prev) => {
-      if (prev.has(id)) return prev
-      const next = new Set(prev)
-      next.add(id)
-      return next
-    })
     setEmails((prev) =>
       prev.map((m) => (m.id === id ? { ...m, read: true } : m)),
     )
+    if (useLiveMail && mailApiBase) {
+      const session = getSession()
+      if (session) {
+        try {
+          await markMailMessagesReadState(mailApiBase, getBearerTokenForApi(session), [id], true)
+        } catch {
+          // keep optimistic UI state even if network call fails
+        }
+      }
+    }
     setMobileShowDetail(true)
-  }, [])
+  }, [useLiveMail, mailApiBase])
 
   const loadLiveMailbox = useCallback(async (opts?: { silent?: boolean }) => {
     if (!useLiveMail || !mailApiBase) return
@@ -875,15 +941,13 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
       const folders = await fetchUserFolders(mailApiBase, token)
       setUserFolders(folders)
       const list = await fetchLiveMailbox(mailApiBase, token, folders)
-      const readSet = readMessageIdsRef.current
       setEmails((prev) => {
         const prevById = new Map(prev.map((m) => [m.id, m]))
         return list.map((m) => {
           const old = prevById.get(m.id)
-          const read = m.folder === 'inbox' ? (old?.read ?? false) || readSet.has(m.id) : true
           return {
             ...m,
-            read,
+            read: m.read,
             body: old?.body ?? m.body,
             bodyIsHtml: old?.bodyIsHtml ?? m.bodyIsHtml,
             to: old?.to?.length ? old.to : m.to,
@@ -1010,6 +1074,14 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     () => emails.filter((m) => m.folder === 'inbox' && !m.read).length,
     [emails],
   )
+
+  useEffect(() => {
+    if (unreadInInbox > 0) {
+      document.title = `New (${unreadInInbox}) - Cmail`
+      return
+    }
+    document.title = 'Cmail'
+  }, [unreadInInbox])
 
   const moveMessage = useCallback(
     async (messageId: string, target: MailFolder) => {
@@ -1145,24 +1217,27 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   }, [toolbarTargetIds, emails, useLiveMail, mailApiBase, loadLiveMailbox])
 
   const markToolbarReadState = useCallback(
-    (read: boolean) => {
+    async (read: boolean) => {
       const ids = toolbarTargetIds
       if (ids.length === 0) return
       const idSet = new Set(ids)
       setEmails((prev) =>
         prev.map((m) => (idSet.has(m.id) ? { ...m, read } : m)),
       )
-      setReadMessageIds((prev) => {
-        const next = new Set(prev)
-        for (const id of ids) {
-          if (read) next.add(id)
-          else next.delete(id)
+      if (useLiveMail && mailApiBase) {
+        const session = getSession()
+        if (session) {
+          try {
+            await markMailMessagesReadState(mailApiBase, getBearerTokenForApi(session), ids, read)
+          } catch (e) {
+            setMailLoadError(e instanceof Error ? e.message : 'Mark read/unread failed')
+            await loadLiveMailbox({ silent: true })
+          }
         }
-        return next
-      })
+      }
       setBulkSelectedIds(new Set())
     },
-    [toolbarTargetIds],
+    [toolbarTargetIds, useLiveMail, mailApiBase, loadLiveMailbox],
   )
 
   const moveToolbar = useCallback(
@@ -1530,9 +1605,6 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                   <IconFolderPlus className="cm-icon cm-icon--sm" />
                 </button>
               </div>
-              <p className="cm-sidebar__hint cm-user-folders__hint">
-                Labels live in your mailbox index (not empty S3 paths). Move messages here to fill a folder.
-              </p>
               {newFolderOpen ? (
                 <div className="cm-new-folder">
                   <input
@@ -1591,9 +1663,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
               </nav>
             </div>
 
-            <div className="cm-sidebar__footer">
-              <p className="cm-sidebar__hint">AWS SES · Draft UI</p>
-            </div>
+            <div className="cm-sidebar__footer" />
           </div>
         </aside>
 
@@ -1661,7 +1731,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                   className="cm-toolbar__btn"
                   title="Mark selected as read"
                   disabled={toolbarTargetIds.length === 0}
-                  onClick={() => markToolbarReadState(true)}
+                  onClick={() => void markToolbarReadState(true)}
                 >
                   <span className="cm-toolbar__btn-text">Mark read</span>
                 </button>
@@ -1670,7 +1740,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                   className="cm-toolbar__btn"
                   title="Mark selected as unread"
                   disabled={toolbarTargetIds.length === 0}
-                  onClick={() => markToolbarReadState(false)}
+                  onClick={() => void markToolbarReadState(false)}
                 >
                   <span className="cm-toolbar__btn-text">Mark unread</span>
                 </button>
@@ -1876,9 +1946,9 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                               ))
                             ) : (
                               <span className="cm-read__to-fallback">
-                                {emailFromIdToken() ? (
+                                {currentEmail ? (
                                   <>
-                                    You &lt;{emailFromIdToken()}&gt;
+                                    You &lt;{currentEmail}&gt;
                                   </>
                                 ) : (
                                   '—'
@@ -2199,7 +2269,9 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
         onClose={() => setSettingsOpen(false)}
         theme={theme}
         onToggleTheme={toggleTheme}
-        primaryEmail={emailFromIdToken()}
+        primaryEmail={currentEmail}
+        initialDisplayName={accountDisplayName}
+        onDisplayNameSaved={setAccountDisplayName}
         trustedDomains={[...trustedImageDomains].sort((a, b) => a.localeCompare(b))}
         onRemoveTrustedDomain={removeTrustedDomain}
         onClearTrustedDomains={clearTrustedDomains}

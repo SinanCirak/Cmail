@@ -79,6 +79,10 @@ def _folder_uid_from_sk(sk: str) -> tuple[str, str]:
     return folder_safe, uid
 
 
+def _default_read_for_folder(store_folder: str) -> bool:
+    return store_folder != "INBOX"
+
+
 def _parse_json_body(event: dict) -> dict:
     try:
         raw = event.get("body") or "{}"
@@ -196,6 +200,11 @@ def list_messages(user_email: str, nav_folder: str) -> dict:
                 sort_ts = int(item.get("sort_ts", {}).get("N", "0"))
                 s3_key = item.get("s3_key", {}).get("S", "")
                 uid = item.get("imap_uid", {}).get("S", sk.split("#")[-1])
+                read_attr = item.get("read")
+                if isinstance(read_attr, dict) and "BOOL" in read_attr:
+                    read_val = bool(read_attr.get("BOOL"))
+                else:
+                    read_val = _default_read_for_folder(store_folder)
                 items_out.append(
                     {
                         "id": sk,
@@ -207,7 +216,7 @@ def list_messages(user_email: str, nav_folder: str) -> dict:
                             "email": _parse_email(from_addr),
                         },
                         "sentAt": datetime.fromtimestamp(sort_ts, tz=timezone.utc).isoformat(),
-                        "read": True,
+                        "read": read_val,
                         "starred": False,
                         "hasAttachment": False,
                         "s3Key": s3_key,
@@ -511,6 +520,8 @@ def move_message(user_email: str, sk: str, target_nav: str) -> dict:
         item2["sk"] = {"S": new_sk}
         item2["s3_key"] = {"S": new_key}
         item2["folder"] = {"S": new_store}
+        if "read" not in item2:
+            item2["read"] = {"BOOL": _default_read_for_folder(new_store)}
         # keep subject, from_addr, sort_ts, imap_uid, etc.
         ddb.put_item(TableName=METADATA_TABLE, Item=item2)
     except Exception as e:
@@ -529,6 +540,29 @@ def _parse_address_list_field(s: str) -> list[str]:
         if addr and "@" in addr:
             out.append(addr.lower())
     return out
+
+
+def set_read_state(user_email: str, sks: list[str], read: bool) -> dict:
+    if not sks:
+        return _response(400, {"error": "sks required"})
+    pk = _pk(user_email)
+    updated = 0
+    for raw in sks:
+        sk = urllib.parse.unquote(str(raw or "").strip())
+        if not sk.startswith("MSG#"):
+            continue
+        try:
+            ddb.update_item(
+                TableName=METADATA_TABLE,
+                Key={"pk": {"S": pk}, "sk": {"S": sk}},
+                UpdateExpression="SET #r = :v",
+                ExpressionAttributeNames={"#r": "read"},
+                ExpressionAttributeValues={":v": {"BOOL": bool(read)}},
+            )
+            updated += 1
+        except Exception:
+            continue
+    return _response(200, {"ok": True, "updated": updated})
 
 
 def _save_sent_copy(user_email: str, msg: EmailMessage, raw: bytes, subject: str) -> None:
@@ -558,6 +592,7 @@ def _save_sent_copy(user_email: str, msg: EmailMessage, raw: bytes, subject: str
             "from_addr": {"S": user_email[:900]},
             "imap_uid": {"S": uid},
             "folder": {"S": folder_safe},
+            "read": {"BOOL": True},
             "sort_ts": {"N": str(ts)},
         },
     )
@@ -771,6 +806,16 @@ def lambda_handler(event, context):
         if not folder:
             return _response(400, {"error": "folder required"})
         return move_message(user_email, sk_raw, str(folder))
+
+    if path == "/mail/messages/read" and method == "PATCH":
+        sks = body.get("sks")
+        read_val = body.get("read")
+        if not isinstance(sks, list):
+            one = body.get("sk")
+            sks = [one] if one else []
+        if not isinstance(read_val, bool):
+            return _response(400, {"error": "read(boolean) required"})
+        return set_read_state(user_email, sks, read_val)
 
     if path == "/mail/message" and method == "DELETE":
         sk_raw = qs.get("sk") or body.get("sk")

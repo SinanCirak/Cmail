@@ -10,6 +10,8 @@ type AuthSettings = {
   userPoolId: string
 }
 
+type JwtClaims = Record<string, unknown>
+
 export type AuthSession = {
   accessToken: string
   idToken: string
@@ -219,6 +221,122 @@ export function getSession(): AuthSession | null {
   } catch {
     return null
   }
+}
+
+function decodeJwtClaims(token: string): JwtClaims | null {
+  try {
+    const payload = token.split('.')[1]
+    if (!payload) return null
+    return JSON.parse(atob(payload)) as JwtClaims
+  } catch {
+    return null
+  }
+}
+
+function sessionUsername(session: AuthSession): string | null {
+  const claims = decodeJwtClaims(session.idToken)
+  if (!claims) return null
+  const tryStr = (k: string) => {
+    const v = claims[k]
+    return typeof v === 'string' && v.trim() ? v.trim() : null
+  }
+  return tryStr('cognito:username') ?? tryStr('email') ?? tryStr('preferred_username')
+}
+
+export function getDisplayNameFromSession(session: AuthSession | null): string {
+  if (!session) return ''
+  const claims = decodeJwtClaims(session.idToken)
+  if (!claims) return ''
+  const v = claims.name
+  return typeof v === 'string' ? v : ''
+}
+
+async function getCognitoUserForSession(session: AuthSession) {
+  const { CognitoUser, CognitoUserAttribute, CognitoUserPool, CognitoIdToken, CognitoAccessToken, CognitoRefreshToken, CognitoUserSession } =
+    await import('amazon-cognito-identity-js')
+
+  const settings = loadSettings()
+  const validation = ensureSettings(settings)
+  if (validation) throw new Error(validation)
+
+  const username = sessionUsername(session)
+  if (!username) throw new Error('Could not resolve current user from session.')
+
+  const userPool = new CognitoUserPool({
+    UserPoolId: settings.userPoolId,
+    ClientId: settings.clientId,
+  })
+
+  const user = new CognitoUser({
+    Username: username,
+    Pool: userPool,
+  })
+
+  const userSession = new CognitoUserSession({
+    IdToken: new CognitoIdToken({ IdToken: session.idToken }),
+    AccessToken: new CognitoAccessToken({ AccessToken: session.accessToken }),
+    RefreshToken: new CognitoRefreshToken({ RefreshToken: session.refreshToken ?? '' }),
+  })
+  user.setSignInUserSession(userSession)
+
+  return { user, CognitoUserAttribute }
+}
+
+export async function changePasswordWithSession(
+  session: AuthSession,
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const { user } = await getCognitoUserForSession(session)
+  const cur = currentPassword.trim()
+  const next = newPassword.trim()
+  if (!cur || !next) throw new Error('Current and new password are required.')
+  await new Promise<void>((resolve, reject) => {
+    user.changePassword(cur, next, (err, result) => {
+      if (err) {
+        reject(new Error(String(err.message || 'Password change failed.')))
+        return
+      }
+      if (result !== 'SUCCESS') {
+        reject(new Error('Password change failed.'))
+        return
+      }
+      resolve()
+    })
+  })
+}
+
+export async function updateDisplayNameWithSession(
+  session: AuthSession,
+  displayName: string,
+): Promise<AuthSession> {
+  const { user, CognitoUserAttribute } = await getCognitoUserForSession(session)
+  const name = displayName.trim()
+  if (!name) throw new Error('Display name is required.')
+  await new Promise<void>((resolve, reject) => {
+    user.updateAttributes(
+      [new CognitoUserAttribute({ Name: 'name', Value: name })],
+      (err) => {
+        if (err) {
+          reject(new Error(String(err.message || 'Could not update display name.')))
+          return
+        }
+        resolve()
+      },
+    )
+  })
+
+  const updatedClaims = {
+    ...(decodeJwtClaims(session.idToken) ?? {}),
+    name,
+  }
+  const encoded = btoa(JSON.stringify(updatedClaims))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '')
+  const parts = session.idToken.split('.')
+  const idToken = parts.length === 3 ? `${parts[0]}.${encoded}.${parts[2]}` : session.idToken
+  return { ...session, idToken }
 }
 
 export function clearSession() {

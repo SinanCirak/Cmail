@@ -114,6 +114,7 @@ def process_object(bucket: str, key: str) -> None:
             "from_addr": {"S": frm[:900]},
             "imap_uid": {"S": uid},
             "folder": {"S": folder_safe},
+            "read": {"BOOL": False},
             "sort_ts": {"N": str(int(sort_ts))},
         },
     )
