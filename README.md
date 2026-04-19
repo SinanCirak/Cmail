@@ -44,19 +44,7 @@ I built Cmail to run custom mail operations end-to-end on AWS with:
 
 ### Architecture Diagram
 
-```mermaid
-flowchart LR
-  U[User / Browser] --> FE[React SPA on S3 + CloudFront]
-  FE --> APIGW[API Gateway]
-  APIGW --> L[Lambda Mail API]
-  L --> DDB[(DynamoDB Metadata)]
-  L --> S3[(S3 Mail Archive)]
-  SESI[SES Inbound] --> S3
-  S3 --> INL[Lambda Inbound Indexer]
-  INL --> DDB
-  L --> SESO[SES Outbound]
-  FE --> COG[Cognito]
-```
+![Cmail AWS Architecture](./Cmail%20Diagram.png)
 
 ## 🚀 Features
 
