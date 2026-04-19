@@ -1,9 +1,14 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
+import { injectCidIntoHtml } from '../mail/cidImages'
+import type { InlineImagePart } from '../types/mail'
 
 type Props = {
   html: string
   /** Match app chrome so email body does not inherit broken contrast */
   dark: boolean
+  /** When false, CID images stay unresolved until the user opts in (privacy). */
+  loadInlineImages?: boolean
+  inlineImages?: InlineImagePart[]
 }
 
 /**
@@ -13,8 +18,18 @@ type Props = {
  * Scripts are still blocked (no allow-scripts).
  * Tracking pixels (1×1) are hidden; images are constrained.
  */
-export function EmailHtmlIframe({ html, dark }: Props) {
+export function EmailHtmlIframe({
+  html,
+  dark,
+  loadInlineImages = false,
+  inlineImages,
+}: Props) {
   const ref = useRef<HTMLIFrameElement>(null)
+
+  const resolvedHtml = useMemo(() => {
+    if (!loadInlineImages || !inlineImages?.length) return html
+    return injectCidIntoHtml(html, inlineImages)
+  }, [html, loadInlineImages, inlineImages])
 
   useEffect(() => {
     const iframe = ref.current
@@ -75,7 +90,7 @@ export function EmailHtmlIframe({ html, dark }: Props) {
       ro?.disconnect()
       imgs.forEach((img) => img.removeEventListener('load', syncHeight))
     }
-  }, [html, dark])
+  }, [resolvedHtml, dark])
 
   return (
     <iframe

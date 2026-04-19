@@ -204,6 +204,7 @@ export type MailContentPayload = {
   body: string
   isHtml: boolean
   attachments?: { name: string }[]
+  inlineImages?: { cid: string; contentType: string; contentBase64: string }[]
   from?: MailContact | null
   to?: MailContact[]
   cc?: MailContact[]

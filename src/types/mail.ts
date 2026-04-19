@@ -23,6 +23,13 @@ export interface MailAttachment {
   size?: number
 }
 
+/** MIME parts with Content-ID (for <img src="cid:...">); loaded with full message body. */
+export interface InlineImagePart {
+  cid: string
+  contentType: string
+  contentBase64: string
+}
+
 export interface MailMessage {
   id: string
   folder: MailFolder
@@ -43,6 +50,8 @@ export interface MailMessage {
   labels?: string[]
   /** S3 object key for archived .eml (live mailbox API) */
   s3Key?: string
+  /** CID inline images from raw .eml (shown only after user trusts sender / chooses “show images”) */
+  inlineImages?: InlineImagePart[]
 }
 
 export function customFolderKey(userFolderId: string): `custom:${string}` {

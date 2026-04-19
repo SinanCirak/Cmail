@@ -60,6 +60,24 @@ const SYSTEM_NAV: { id: NavFolder; label: string; icon: typeof IconInbox }[] = [
 const STORAGE_FOLDERS = 'cmail-user-folders'
 const STORAGE_THEME = 'cmail-theme'
 const STORAGE_SPLIT = 'cmail-split-list-width'
+const STORAGE_TRUSTED_IMAGE_DOMAINS = 'cmail-trusted-image-domains'
+
+function readTrustedImageDomains(): Set<string> {
+  try {
+    const s = localStorage.getItem(STORAGE_TRUSTED_IMAGE_DOMAINS)
+    const a = s ? JSON.parse(s) : []
+    if (!Array.isArray(a)) return new Set()
+    return new Set(a.map((x) => String(x).toLowerCase()).filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
+function emailDomainFromAddress(addr: string): string {
+  const i = addr.lastIndexOf('@')
+  if (i < 0) return ''
+  return addr.slice(i + 1).trim().toLowerCase()
+}
 
 type SettingsTab = 'account' | 'security' | 'appearance'
 
@@ -458,6 +476,9 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const [composeSending, setComposeSending] = useState(false)
   const [composeError, setComposeError] = useState<string | null>(null)
 
+  const [trustedImageDomains, setTrustedImageDomains] = useState(() => readTrustedImageDomains())
+  const [showImagesSessionIds, setShowImagesSessionIds] = useState<Set<string>>(() => new Set())
+
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
 
@@ -531,6 +552,39 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     () => emails.find((m) => m.id === selectedId) ?? null,
     [emails, selectedId],
   )
+
+  const allowInlineImages = useMemo(() => {
+    if (!selected?.inlineImages?.length) return true
+    if (showImagesSessionIds.has(selected.id)) return true
+    const d = emailDomainFromAddress(selected.from.email)
+    if (d && trustedImageDomains.has(d)) return true
+    return false
+  }, [selected, showImagesSessionIds, trustedImageDomains])
+
+  const trustSenderImagesDomain = useCallback(() => {
+    const d = selected ? emailDomainFromAddress(selected.from.email) : ''
+    if (!d) return
+    setTrustedImageDomains((prev) => {
+      if (prev.has(d)) return prev
+      const n = new Set(prev)
+      n.add(d)
+      try {
+        localStorage.setItem(STORAGE_TRUSTED_IMAGE_DOMAINS, JSON.stringify([...n]))
+      } catch {
+        /* ignore */
+      }
+      return n
+    })
+  }, [selected])
+
+  const showEmbeddedImagesOnce = useCallback(() => {
+    if (!selected) return
+    setShowImagesSessionIds((prev) => {
+      const n = new Set(prev)
+      n.add(selected.id)
+      return n
+    })
+  }, [selected])
 
   useEffect(() => {
     setSelectedId((prev) => {
@@ -618,6 +672,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                   from: payload.from ?? m.from,
                   attachments:
                     atts && atts.length > 0 ? atts : m.attachments,
+                  inlineImages: payload.inlineImages?.length ? payload.inlineImages : undefined,
                 }
               : m,
           ),
@@ -1428,6 +1483,32 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                     </button>
                   </div>
                   </div>
+                  {selected.inlineImages && selected.inlineImages.length > 0 && !allowInlineImages ? (
+                    <div className="cm-read__images-banner" role="region" aria-label="Embedded images">
+                      <p className="cm-read__images-banner__text">
+                        This message has embedded images (for example logos). They stay off until you load
+                        them.
+                      </p>
+                      <div className="cm-read__images-banner__actions">
+                        <button
+                          type="button"
+                          className="cm-btn cm-btn--primary cm-btn--sm"
+                          onClick={() => showEmbeddedImagesOnce()}
+                        >
+                          Show images
+                        </button>
+                        {emailDomainFromAddress(selected.from.email) ? (
+                          <button
+                            type="button"
+                            className="cm-btn cm-btn--ghost cm-btn--sm"
+                            onClick={() => trustSenderImagesDomain()}
+                          >
+                            Always show from @{emailDomainFromAddress(selected.from.email)}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="cm-read__body-zone">
                   <div
                     className={`cm-read__body ${looksLikeHtmlBody(selected.body, selected.bodyIsHtml) ? 'cm-read__body--html' : ''}`}
@@ -1435,7 +1516,12 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                     {contentBusyId === selected.id ? (
                       <p className="cm-read__loading">Loading message…</p>
                     ) : looksLikeHtmlBody(selected.body, selected.bodyIsHtml) ? (
-                      <EmailHtmlIframe html={selected.body} dark={theme === 'dark'} />
+                      <EmailHtmlIframe
+                        html={selected.body}
+                        dark={theme === 'dark'}
+                        loadInlineImages={allowInlineImages}
+                        inlineImages={selected.inlineImages}
+                      />
                     ) : (
                       selected.body.split('\n').map((line, i) => (
                         <p key={`${selected.id}-L${i}`}>{line}</p>

@@ -344,6 +344,55 @@ def _b64_decode_attachment(b64: str) -> bytes:
     return base64.b64decode(s, validate=False)
 
 
+def _normalize_cid_header(val: str) -> str:
+    s = (val or "").strip()
+    if s.startswith("<"):
+        s = s[1:]
+    if s.endswith(">"):
+        s = s[:-1]
+    return s.strip().lower()
+
+
+def _extract_inline_images(msg: Message) -> list[dict]:
+    """Image parts with Content-ID for <img src=cid:...> (multipart/related)."""
+    out: list[dict] = []
+    total_bytes = 0
+    max_total = 6 * 1024 * 1024
+    max_one = 2 * 1024 * 1024
+    seen: set[str] = set()
+
+    for part in msg.walk():
+        ctype = (part.get_content_type() or "").lower()
+        if not ctype.startswith("image/"):
+            continue
+        cid_raw = part.get("Content-ID")
+        if not cid_raw:
+            continue
+        cid_str = str(cid_raw).strip()
+        norm = _normalize_cid_header(cid_str)
+        if not norm or norm in seen:
+            continue
+        try:
+            payload = part.get_payload(decode=True)
+        except Exception:
+            continue
+        if not isinstance(payload, bytes) or not payload:
+            continue
+        if len(payload) > max_one:
+            continue
+        if total_bytes + len(payload) > max_total:
+            break
+        try:
+            b64 = base64.b64encode(payload).decode("ascii")
+        except Exception:
+            continue
+        total_bytes += len(payload)
+        seen.add(norm)
+        out.append({"cid": norm, "contentType": ctype, "contentBase64": b64})
+
+    return out
+
+
 def get_content(user_email: str, s3_key: str) -> dict:
     safe = _safe_mailbox(user_email)
     prefix = f"raw/{safe}/"
@@ -366,12 +415,14 @@ def get_content(user_email: str, s3_key: str) -> dict:
                 attachments.append({"name": fname})
 
     from_c = _contact_one(msg, "From")
+    inline_images = _extract_inline_images(msg)
     return _response(
         200,
         {
             "body": body_out,
             "isHtml": use_html,
             "attachments": attachments,
+            "inlineImages": inline_images,
             "from": from_c,
             "to": _to_display_contacts(msg),
             "cc": _contact_list(msg, "Cc"),
