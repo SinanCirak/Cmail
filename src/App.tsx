@@ -8,15 +8,16 @@ import {
   getSettingsError,
   hasAuthSettings,
   isSessionValid,
-  loginWithCognito,
-  logoutFromCognito,
   saveSession,
+  signInWithPassword,
+  signOutLocal,
   type AuthSession,
 } from './auth/cognito'
 
 export default function App() {
   const [session, setSession] = useState<AuthSession | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [loginBusy, setLoginBusy] = useState(false)
   const [authError, setAuthError] = useState<string | null>(null)
 
   const settingsError = useMemo(() => getSettingsError(), [])
@@ -67,25 +68,36 @@ export default function App() {
     return (
       <LoginPage
         title="Cmail"
-        subtitle="Set VITE_COGNITO_* variables to enable secure login."
+        subtitle="Set VITE_COGNITO_* variables (including VITE_COGNITO_USER_POOL_ID) to enable login."
         error={settingsError}
       />
     )
   }
 
   if (authLoading) {
-    return <LoginPage title="Cmail" subtitle="Signing you in..." />
+    return <LoginPage title="Cmail" subtitle="Signing you in..." loading />
   }
 
   if (!session) {
     return (
       <LoginPage
         title="Cmail"
-        subtitle="Secure access with Amazon Cognito."
+        subtitle="Sign in with your account."
         error={authError}
-        onSignIn={() => {
+        loading={loginBusy}
+        credentialsForm
+        onCredentialsSubmit={async (email, password) => {
           setAuthError(null)
-          void loginWithCognito()
+          setLoginBusy(true)
+          try {
+            const next = await signInWithPassword(email, password)
+            saveSession(next)
+            setSession(next)
+          } catch (e) {
+            setAuthError(e instanceof Error ? e.message : 'Sign-in failed.')
+          } finally {
+            setLoginBusy(false)
+          }
         }}
       />
     )
@@ -94,9 +106,8 @@ export default function App() {
   return (
     <MailDashboard
       onLogout={() => {
-        clearSession()
+        signOutLocal()
         setSession(null)
-        logoutFromCognito()
       }}
     />
   )

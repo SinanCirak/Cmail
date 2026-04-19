@@ -58,6 +58,46 @@
   font-size: 0.95rem;
 }
 
+.cm-login__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.cm-login__label {
+  display: block;
+  margin-top: 0.65rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.cm-login__label:first-of-type {
+  margin-top: 0;
+}
+
+.cm-login__input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(148, 163, 184, 0.65);
+  border-radius: 10px;
+  padding: 0.62rem 0.75rem;
+  font-size: 0.95rem;
+  color: #0f172a;
+  background: #fff;
+}
+
+.cm-login__input:focus {
+  outline: none;
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18);
+}
+
+.cm-login__input:disabled {
+  opacity: 0.65;
+}
+
 .cm-login__error {
   margin-bottom: 0.9rem;
   padding: 0.7rem 0.75rem;
@@ -70,6 +110,7 @@
 
 .cm-login__btn {
   width: 100%;
+  margin-top: 1rem;
   border: none;
   border-radius: 12px;
   padding: 0.75rem 1rem;

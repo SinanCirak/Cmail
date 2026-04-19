@@ -47,7 +47,7 @@ This repository now includes Terraform under `terraform/` for:
 - Route53 alias record: `cmail.cirak.ca`
 - ACM certificate (us-east-1) for CloudFront
 - CloudFront + private S3 website bucket
-- Cognito User Pool + Hosted UI (OAuth2 code flow + PKCE client)
+- Cognito User Pool (app sign-in uses SRP on your domain; legacy OAuth2+PKCE still works for `?code=` callbacks)
 - API Gateway HTTP API with JWT authorizer (Cognito)
 - Lambda sample protected endpoint (`GET /me`)
 
@@ -67,6 +67,7 @@ After apply, note these outputs:
 - `api_base_url`
 - `cognito_domain`
 - `cognito_client_id`
+- `cognito_user_pool_id`
 
 ### 2) Configure frontend auth environment
 
@@ -74,6 +75,7 @@ Create `.env.local` in project root:
 
 ```bash
 VITE_COGNITO_REGION=ca-central-1
+VITE_COGNITO_USER_POOL_ID=<terraform output -raw cognito_user_pool_id>
 VITE_COGNITO_DOMAIN=<terraform output cognito_domain>
 VITE_COGNITO_CLIENT_ID=<terraform output cognito_client_id>
 VITE_COGNITO_REDIRECT_URI=https://cmail.cirak.ca/

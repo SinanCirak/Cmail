@@ -1,3 +1,10 @@
+import {
+  AuthenticationDetails,
+  CognitoUser,
+  CognitoUserPool,
+  type CognitoUserSession,
+} from 'amazon-cognito-identity-js'
+
 const STORAGE_SESSION = 'cmail-auth-session'
 const STORAGE_PKCE = 'cmail-auth-pkce'
 
@@ -7,6 +14,7 @@ type AuthSettings = {
   clientId: string
   redirectUri: string
   logoutUri: string
+  userPoolId: string
 }
 
 export type AuthSession = {
@@ -27,7 +35,8 @@ function loadSettings(): AuthSettings {
   const clientId = readEnv('VITE_COGNITO_CLIENT_ID')
   const redirectUri = readEnv('VITE_COGNITO_REDIRECT_URI')
   const logoutUri = readEnv('VITE_COGNITO_LOGOUT_URI')
-  return { region, domain, clientId, redirectUri, logoutUri }
+  const userPoolId = readEnv('VITE_COGNITO_USER_POOL_ID')
+  return { region, domain, clientId, redirectUri, logoutUri, userPoolId }
 }
 
 function ensureSettings(settings: AuthSettings): string | null {
@@ -36,6 +45,7 @@ function ensureSettings(settings: AuthSettings): string | null {
   if (!settings.clientId) return 'VITE_COGNITO_CLIENT_ID is missing.'
   if (!settings.redirectUri) return 'VITE_COGNITO_REDIRECT_URI is missing.'
   if (!settings.logoutUri) return 'VITE_COGNITO_LOGOUT_URI is missing.'
+  if (!settings.userPoolId) return 'VITE_COGNITO_USER_POOL_ID is missing.'
   return null
 }
 
@@ -78,7 +88,61 @@ export function getSettingsError(): string | null {
   return ensureSettings(loadSettings())
 }
 
-export async function loginWithCognito() {
+/** Native app client sign-in (SRP). User stays on your domain — no Hosted UI redirect. */
+export async function signInWithPassword(username: string, password: string): Promise<AuthSession> {
+  const settings = loadSettings()
+  const validation = ensureSettings(settings)
+  if (validation) throw new Error(validation)
+
+  const trimmed = username.trim()
+  if (!trimmed || !password) throw new Error('Enter email and password.')
+
+  const poolData = {
+    UserPoolId: settings.userPoolId,
+    ClientId: settings.clientId,
+  }
+  const userPool = new CognitoUserPool(poolData)
+  const cognitoUser = new CognitoUser({
+    Username: trimmed,
+    Pool: userPool,
+  })
+  const authDetails = new AuthenticationDetails({
+    Username: trimmed,
+    Password: password,
+  })
+
+  return new Promise((resolve, reject) => {
+    cognitoUser.authenticateUser(authDetails, {
+      onSuccess: (session: CognitoUserSession) => {
+        resolve({
+          accessToken: session.getAccessToken().getJwtToken(),
+          idToken: session.getIdToken().getJwtToken(),
+          refreshToken: session.getRefreshToken()?.getToken(),
+          expiresAt: session.getIdToken().getExpiration() * 1000,
+        })
+      },
+      onFailure: (err) => {
+        const msg =
+          typeof err === 'object' && err !== null && 'message' in err
+            ? String((err as { message: string }).message)
+            : 'Sign-in failed.'
+        reject(new Error(msg))
+      },
+      newPasswordRequired: () => {
+        reject(new Error('You must set a new password before signing in.'))
+      },
+      mfaRequired: () => {
+        reject(new Error('MFA is enabled for this account but is not supported in this app yet.'))
+      },
+      totpRequired: () => {
+        reject(new Error('MFA is enabled for this account but is not supported in this app yet.'))
+      },
+    })
+  })
+}
+
+/** Legacy Hosted UI redirect (long Cognito URL). Prefer {@link signInWithPassword}. */
+export async function loginWithCognitoHostedUi() {
   const settings = loadSettings()
   const validation = ensureSettings(settings)
   if (validation) throw new Error(validation)
@@ -168,7 +232,13 @@ export function isSessionValid(session: AuthSession): boolean {
   return Date.now() < session.expiresAt - 30_000
 }
 
-export function logoutFromCognito() {
+/** Ends the app session locally. Does not redirect to Cognito Hosted UI. */
+export function signOutLocal() {
+  clearSession()
+}
+
+/** Full logout via Cognito Hosted UI (redirects away; use when you used Hosted UI sign-in). */
+export function logoutFromCognitoHostedUi() {
   const settings = loadSettings()
   const validation = ensureSettings(settings)
   if (validation) return
