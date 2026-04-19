@@ -1144,6 +1144,27 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     setBulkSelectedIds(new Set())
   }, [toolbarTargetIds, emails, useLiveMail, mailApiBase, loadLiveMailbox])
 
+  const markToolbarReadState = useCallback(
+    (read: boolean) => {
+      const ids = toolbarTargetIds
+      if (ids.length === 0) return
+      const idSet = new Set(ids)
+      setEmails((prev) =>
+        prev.map((m) => (idSet.has(m.id) ? { ...m, read } : m)),
+      )
+      setReadMessageIds((prev) => {
+        const next = new Set(prev)
+        for (const id of ids) {
+          if (read) next.add(id)
+          else next.delete(id)
+        }
+        return next
+      })
+      setBulkSelectedIds(new Set())
+    },
+    [toolbarTargetIds],
+  )
+
   const moveToolbar = useCallback(
     async (target: MailFolder) => {
       const ids = toolbarTargetIds
@@ -1634,6 +1655,24 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                 >
                   <IconTrash className="cm-icon" />
                   <span className="cm-toolbar__btn-text">Delete</span>
+                </button>
+                <button
+                  type="button"
+                  className="cm-toolbar__btn"
+                  title="Mark selected as read"
+                  disabled={toolbarTargetIds.length === 0}
+                  onClick={() => markToolbarReadState(true)}
+                >
+                  <span className="cm-toolbar__btn-text">Mark read</span>
+                </button>
+                <button
+                  type="button"
+                  className="cm-toolbar__btn"
+                  title="Mark selected as unread"
+                  disabled={toolbarTargetIds.length === 0}
+                  onClick={() => markToolbarReadState(false)}
+                >
+                  <span className="cm-toolbar__btn-text">Mark unread</span>
                 </button>
                 {toolbarTargetIds.length > 0 ? (
                   <label className="cm-toolbar__move">
