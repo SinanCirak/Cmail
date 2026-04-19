@@ -268,6 +268,22 @@ def _contact_list(msg: Message, header: str) -> list[dict]:
     return out
 
 
+def _to_display_contacts(msg: Message) -> list[dict]:
+    """Prefer To; many inbound mails (SES BCC, lists) only set Delivered-To / X-Original-To."""
+    for header in (
+        "To",
+        "Delivered-To",
+        "X-Original-To",
+        "Envelope-To",
+        "X-Envelope-To",
+        "X-Delivered-To",
+    ):
+        got = _contact_list(msg, header)
+        if got:
+            return got
+    return []
+
+
 def _extract_mail_body(msg: Message) -> tuple[str, bool]:
     """Return (body, is_html). Prefer HTML; skip attachment parts (fixes wrong/plain-only picks)."""
     if not msg.is_multipart():
@@ -307,6 +323,18 @@ def _extract_mail_body(msg: Message) -> tuple[str, bool]:
     return "", False
 
 
+def _body_looks_like_html(text: str) -> bool:
+    """Senders sometimes label HTML as text/plain; clients need isHtml true for rendering."""
+    t = (text or "").lstrip("\ufeff").strip()
+    if not t.startswith("<"):
+        return False
+    if re.search(r"</[a-z][a-z0-9.-]*\s*>", t, re.I):
+        return True
+    if re.search(r"<(?:p|div|span|table|html|body|ul|ol|li|a|br)\b", t, re.I):
+        return True
+    return False
+
+
 def _b64_decode_attachment(b64: str) -> bytes:
     """Browser/FileReader base64 may lack padding; strict validate=False avoids PDF decode failures."""
     s = re.sub(r"\s+", "", (b64 or "").strip())
@@ -326,6 +354,8 @@ def get_content(user_email: str, s3_key: str) -> dict:
     msg = BytesParser(policy=policy.default).parsebytes(raw)
 
     body_out, use_html = _extract_mail_body(msg)
+    if not use_html and _body_looks_like_html(body_out):
+        use_html = True
 
     attachments: list[dict] = []
     if msg.is_multipart():
@@ -343,7 +373,7 @@ def get_content(user_email: str, s3_key: str) -> dict:
             "isHtml": use_html,
             "attachments": attachments,
             "from": from_c,
-            "to": _contact_list(msg, "To"),
+            "to": _to_display_contacts(msg),
             "cc": _contact_list(msg, "Cc"),
             "bcc": _contact_list(msg, "Bcc"),
         },

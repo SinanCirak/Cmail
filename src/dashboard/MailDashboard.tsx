@@ -356,8 +356,15 @@ function filterByFolder(emails: MailMessage[], folder: NavFolder): MailMessage[]
 
 function looksLikeHtmlBody(body: string, explicit?: boolean): boolean {
   if (explicit === true) return true
+  const t = body.replace(/^\ufeff/, '').trim()
+  // Many newsletters / SES pipes ship HTML with text/plain or wrong flags — still detect markup
+  if (
+    t.startsWith('<') &&
+    (/<\/[a-z][a-z0-9.-]*\s*>/i.test(t) || /<(p|div|span|table|html|body|ul|ol|li|a|br)\b/i.test(t))
+  ) {
+    return true
+  }
   if (explicit === false) return false
-  const t = body.trim()
   if (!t.startsWith('<')) return false
   return /<\/(p|div|h[1-6]|ul|ol|li|br|span)\s*>/i.test(t) || /<p[\s>]/.test(t)
 }
@@ -374,8 +381,11 @@ function emailFromIdToken(): string | null {
   if (!s?.idToken) return null
   try {
     const p = JSON.parse(atob(s.idToken.split('.')[1])) as Record<string, unknown>
-    const em = p.email
-    return typeof em === 'string' ? em : null
+    const tryStr = (k: string) => {
+      const v = p[k]
+      return typeof v === 'string' && v.includes('@') ? v.trim() : null
+    }
+    return tryStr('email') ?? tryStr('preferred_username') ?? tryStr('cognito:username')
   } catch {
     return null
   }

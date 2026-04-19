@@ -1,6 +1,7 @@
 /* Cmail — professional mail shell (original layout, familiar patterns) */
 
 .cm-shell {
+  --cm-topbar-height: 3.35rem;
   --cm-accent: #0ea5e9;
   --cm-accent-strong: #0284c7;
   --cm-accent-soft: rgba(14, 165, 233, 0.12);
@@ -36,6 +37,8 @@
   align-items: center;
   gap: 1rem;
   padding: 0.65rem 1rem;
+  min-height: var(--cm-topbar-height);
+  box-sizing: border-box;
   background: var(--cm-surface);
   border-bottom: 1px solid var(--cm-border);
   position: sticky;
@@ -178,7 +181,13 @@
   cursor: not-allowed;
 }
 
-.cm-icon-btn--ghost {
+/* "Ghost" contrast is for the dark folder rail only — not the light topbar / read chrome */
+.cm-sidebar .cm-icon-btn--ghost {
+  color: var(--cm-sidebar-text-hi);
+}
+
+.cm-sidebar .cm-icon-btn--ghost:hover:not(:disabled) {
+  background: rgba(248, 250, 252, 0.1);
   color: var(--cm-sidebar-text-hi);
 }
 
@@ -258,9 +267,11 @@
   .cm-sidebar__scrim {
     display: block;
     position: fixed;
-    inset: 0;
+    top: var(--cm-topbar-height);
+    right: 0;
+    bottom: 0;
     left: min(280px, 88vw);
-    z-index: 25;
+    z-index: 51;
     background: rgba(15, 23, 42, 0.45);
     border: none;
     cursor: pointer;
@@ -833,9 +844,12 @@
 }
 
 .cm-read__meta-panel {
-  padding-bottom: 1rem;
-  margin-bottom: 1.25rem;
-  border-bottom: 2px solid var(--cm-border);
+  padding: 1rem 1.1rem 1.1rem;
+  margin: 0 0 1.25rem;
+  border-radius: var(--cm-radius-sm);
+  border: 1px solid var(--cm-border);
+  background: var(--cm-surface);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
 }
 
 .cm-read__meta-panel .cm-read__head {
@@ -1434,11 +1448,14 @@
 
   .cm-sidebar {
     position: fixed;
-    inset: 0 auto 0 0;
+    top: var(--cm-topbar-height);
+    bottom: 0;
+    left: 0;
     width: min(280px, 88vw);
     transform: translateX(-100%);
     transition: transform 0.2s ease;
     box-shadow: var(--cm-shadow);
+    z-index: 52;
   }
 
   .cm-sidebar--open {
@@ -1546,6 +1563,12 @@
 
 .cm-shell.cm-shell--dark .cm-read-pane {
   background: #0c101a;
+}
+
+.cm-shell.cm-shell--dark .cm-read__meta-panel {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--cm-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .cm-shell.cm-shell--dark .cm-splitter::before {
