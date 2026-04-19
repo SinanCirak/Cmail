@@ -19,9 +19,7 @@ dist-ssr
 
 # Local mail sync state (never commit)
 .imap_mail_state.json
-
-# Local automation / sync scripts (not included in repo)
-/scripts/
+**/__pycache__/
 
 # Terraform / infra state
 **/.terraform/*
