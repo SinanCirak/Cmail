@@ -1,10 +1,3 @@
-import {
-  AuthenticationDetails,
-  CognitoUser,
-  CognitoUserPool,
-  type CognitoUserSession,
-} from 'amazon-cognito-identity-js'
-
 const STORAGE_SESSION = 'cmail-auth-session'
 const STORAGE_PKCE = 'cmail-auth-pkce'
 
@@ -90,6 +83,10 @@ export function getSettingsError(): string | null {
 
 /** Native app client sign-in (SRP). User stays on your domain — no Hosted UI redirect. */
 export async function signInWithPassword(username: string, password: string): Promise<AuthSession> {
+  const { AuthenticationDetails, CognitoUser, CognitoUserPool } = await import(
+    'amazon-cognito-identity-js'
+  )
+
   const settings = loadSettings()
   const validation = ensureSettings(settings)
   if (validation) throw new Error(validation)
@@ -113,7 +110,7 @@ export async function signInWithPassword(username: string, password: string): Pr
 
   return new Promise((resolve, reject) => {
     cognitoUser.authenticateUser(authDetails, {
-      onSuccess: (session: CognitoUserSession) => {
+      onSuccess: (session) => {
         resolve({
           accessToken: session.getAccessToken().getJwtToken(),
           idToken: session.getIdToken().getJwtToken(),
