@@ -10,11 +10,14 @@ import {
   fetchUserFolders,
   mailApiBaseUrl,
   mailApiConfigured,
+  encodeFilesForMail,
   moveMailMessage,
   sendMailMessage,
 } from '../mail/mailApi'
 import type { MailFolder, MailMessage, NavFolder, UserFolder } from '../types/mail'
 import { customFolderKey } from '../types/mail'
+import { EmailHtmlIframe } from './EmailHtmlIframe'
+
 const ComposeRichEditor = lazy(() =>
   import('./ComposeRichEditor').then((m) => ({ default: m.ComposeRichEditor })),
 )
@@ -816,13 +819,22 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     setComposeSending(true)
     setComposeError(null)
     try {
-      await sendMailMessage(mailApiBase, getBearerTokenForApi(session), {
+      const attachments = composeFiles.length ? await encodeFilesForMail(composeFiles) : undefined
+      const payload = {
         to,
         cc: composeCc.trim() || undefined,
         bcc: composeBcc.trim() || undefined,
         subject: composeSubject.trim(),
         body: composeBody,
-      })
+        attachments,
+      }
+      const approx = new Blob([JSON.stringify(payload)]).size
+      if (approx > 5.5 * 1024 * 1024) {
+        setComposeError('Message + attachments are too large for one request (keep under ~5MB).')
+        setComposeSending(false)
+        return
+      }
+      await sendMailMessage(mailApiBase, getBearerTokenForApi(session), payload)
       setComposeOpen(false)
       resetCompose()
       await loadLiveMailbox()
@@ -837,6 +849,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     composeBcc,
     composeSubject,
     composeBody,
+    composeFiles,
     useLiveMail,
     mailApiBase,
     resetCompose,
@@ -1298,6 +1311,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                   </div>
                 </div>
                 <article className="cm-read">
+                  <div className="cm-read__meta-panel">
                   <header className="cm-read__head">
                     <h1 className="cm-read__subject">{selected.subject}</h1>
                     <div className="cm-read__participants">
@@ -1403,21 +1417,21 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                       {selected.folder === 'trash' ? 'Delete permanently' : 'Trash'}
                     </button>
                   </div>
+                  </div>
+                  <div className="cm-read__body-zone">
                   <div
                     className={`cm-read__body ${looksLikeHtmlBody(selected.body, selected.bodyIsHtml) ? 'cm-read__body--html' : ''}`}
                   >
                     {contentBusyId === selected.id ? (
                       <p className="cm-read__loading">Loading message…</p>
                     ) : looksLikeHtmlBody(selected.body, selected.bodyIsHtml) ? (
-                      <div
-                        className="cm-read__html"
-                        dangerouslySetInnerHTML={{ __html: selected.body }}
-                      />
+                      <EmailHtmlIframe html={selected.body} dark={theme === 'dark'} />
                     ) : (
                       selected.body.split('\n').map((line, i) => (
                         <p key={`${selected.id}-L${i}`}>{line}</p>
                       ))
                     )}
+                  </div>
                   </div>
                 </article>
               </>

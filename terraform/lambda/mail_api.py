@@ -485,6 +485,32 @@ def send_outbound(user_email: str, payload: dict) -> dict:
         msg.add_alternative(body_text, subtype="html", charset="utf-8")
     else:
         msg.set_content(body_text if body_text else "(empty)", subtype="plain", charset="utf-8")
+
+    attachments_in = payload.get("attachments") or []
+    if not isinstance(attachments_in, list):
+        attachments_in = []
+    total_att = 0
+    for item in attachments_in:
+        if not isinstance(item, dict):
+            continue
+        fn = (item.get("filename") or item.get("name") or "attachment").strip() or "attachment"
+        b64 = (item.get("contentBase64") or item.get("data") or "").strip()
+        if not b64:
+            continue
+        try:
+            raw_att = base64.b64decode(b64, validate=True)
+        except Exception:
+            return _response(400, {"error": f"invalid base64 attachment: {fn[:80]}"})
+        total_att += len(raw_att)
+        if total_att > 15 * 1024 * 1024:
+            return _response(400, {"error": "attachments too large (max 15MB total)"})
+        ctype = (item.get("contentType") or item.get("mime") or "application/octet-stream").strip()
+        if "/" in ctype:
+            main_t, sub_t = ctype.split("/", 1)
+        else:
+            main_t, sub_t = "application", "octet-stream"
+        msg.add_attachment(raw_att, maintype=main_t, subtype=sub_t, filename=fn[:500])
+
     raw = msg.as_bytes(policy=policy.SMTP)
     uniq_dest = list(dict.fromkeys(dests))
     try:

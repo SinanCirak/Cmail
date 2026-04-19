@@ -120,10 +120,46 @@ export async function moveMailMessage(apiBase: string, token: string, sk: string
   }
 }
 
+export type OutboundAttachment = {
+  filename: string
+  contentType: string
+  contentBase64: string
+}
+
+/** Base64-encode files for JSON POST to `/mail/send` (watch Lambda ~6MB payload limit). */
+export async function encodeFilesForMail(files: File[]): Promise<OutboundAttachment[]> {
+  return Promise.all(
+    files.map(
+      (f) =>
+        new Promise<OutboundAttachment>((resolve, reject) => {
+          const r = new FileReader()
+          r.onload = () => {
+            const s = r.result as string
+            const i = s.indexOf(',')
+            resolve({
+              filename: f.name,
+              contentType: f.type || 'application/octet-stream',
+              contentBase64: i >= 0 ? s.slice(i + 1) : s,
+            })
+          }
+          r.onerror = () => reject(r.error ?? new Error('read failed'))
+          r.readAsDataURL(f)
+        }),
+    ),
+  )
+}
+
 export async function sendMailMessage(
   apiBase: string,
   token: string,
-  payload: { to: string; cc?: string; bcc?: string; subject: string; body: string },
+  payload: {
+    to: string
+    cc?: string
+    bcc?: string
+    subject: string
+    body: string
+    attachments?: OutboundAttachment[]
+  },
 ): Promise<void> {
   const res = await fetch(`${apiBase}/mail/send`, {
     ...noCache,
