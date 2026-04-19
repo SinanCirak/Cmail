@@ -15,7 +15,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from email import policy
-from email.message import EmailMessage
+from email.message import EmailMessage, Message
 from email.parser import BytesParser
 from email.utils import parseaddr
 
@@ -159,9 +159,16 @@ def list_folders(user_email: str) -> dict:
 
 def list_messages(user_email: str, nav_folder: str) -> dict:
     nav_key = (nav_folder or "inbox").lower()
-    store_names = _store_prefixes_for_nav(nav_key)
-    if not store_names:
-        return _response(400, {"error": "unknown folder"})
+    if nav_key.startswith("custom:"):
+        fid = nav_key.split(":", 1)[1].strip()
+        try:
+            store_names = [_folder_store_segment(fid)]
+        except ValueError:
+            return _response(400, {"error": "invalid custom folder"})
+    else:
+        store_names = _store_prefixes_for_nav(nav_key)
+        if not store_names:
+            return _response(400, {"error": "unknown folder"})
 
     pk = _pk(user_email)
     items_out: list[dict] = []
@@ -224,6 +231,43 @@ def _parse_email(from_line: str) -> str:
     return ""
 
 
+def _folder_store_segment(folder_id: str) -> str:
+    hexonly = re.sub(r"[^a-fA-F0-9]", "", (folder_id or "").strip())
+    if len(hexonly) < 32:
+        raise ValueError("invalid folder id")
+    return "UF" + hexonly[:32]
+
+
+def _contact_one(msg: Message, header: str) -> dict | None:
+    raw = msg.get(header)
+    if not raw:
+        return None
+    name, addr = parseaddr(str(raw))
+    if not addr or "@" not in addr:
+        return None
+    nm = (name.strip() if name else "") or addr.split("@", 1)[0]
+    return {"name": nm[:240], "email": addr.lower()[:500]}
+
+
+def _contact_list(msg: Message, header: str) -> list[dict]:
+    out: list[dict] = []
+    parts = msg.get_all(header)
+    if not parts:
+        parts = []
+    if not isinstance(parts, list):
+        parts = [parts]
+    block = ";".join(str(p) for p in parts if p)
+    for seg in block.replace(",", ";").split(";"):
+        seg = seg.strip()
+        if not seg:
+            continue
+        name, addr = parseaddr(seg)
+        if addr and "@" in addr:
+            nm = (name.strip() if name else "") or addr.split("@", 1)[0]
+            out.append({"name": nm[:240], "email": addr.lower()[:500]})
+    return out
+
+
 def get_content(user_email: str, s3_key: str) -> dict:
     safe = _safe_mailbox(user_email)
     prefix = f"raw/{safe}/"
@@ -269,12 +313,17 @@ def get_content(user_email: str, s3_key: str) -> dict:
                 fname = part.get_filename() or "attachment"
                 attachments.append({"name": fname})
 
+    from_c = _contact_one(msg, "From")
     return _response(
         200,
         {
             "body": body_out,
             "isHtml": use_html,
             "attachments": attachments,
+            "from": from_c,
+            "to": _contact_list(msg, "To"),
+            "cc": _contact_list(msg, "Cc"),
+            "bcc": _contact_list(msg, "Bcc"),
         },
     )
 
@@ -299,10 +348,19 @@ def delete_message(user_email: str, sk: str) -> dict:
 
 
 def move_message(user_email: str, sk: str, target_nav: str) -> dict:
-    target_nav = (target_nav or "").lower().strip()
-    new_store = NAV_PRIMARY_STORE.get(target_nav)
-    if not new_store:
-        return _response(400, {"error": "unknown folder"})
+    raw_target = (target_nav or "").strip()
+    lower = raw_target.lower()
+    new_store: str | None = None
+    if lower.startswith("custom:"):
+        fid = lower.split(":", 1)[1].strip()
+        try:
+            new_store = _folder_store_segment(fid)
+        except ValueError:
+            return _response(400, {"error": "invalid custom folder"})
+    else:
+        new_store = NAV_PRIMARY_STORE.get(lower)
+        if not new_store:
+            return _response(400, {"error": "unknown folder"})
 
     pk = _pk(user_email)
     safe = _safe_mailbox(user_email)
@@ -445,6 +503,89 @@ def send_outbound(user_email: str, payload: dict) -> dict:
     return _response(200, {"ok": True, "sesMessageId": ses_mid})
 
 
+def list_user_folders(user_email: str) -> dict:
+    pk = _pk(user_email)
+    out: list[dict] = []
+    start_key = None
+    while True:
+        kw: dict = {
+            "TableName": METADATA_TABLE,
+            "KeyConditionExpression": "pk = :pk AND begins_with(sk, :pre)",
+            "ExpressionAttributeValues": {":pk": {"S": pk}, ":pre": {"S": "FOLDER#"}},
+        }
+        if start_key:
+            kw["ExclusiveStartKey"] = start_key
+        resp = ddb.query(**kw)
+        for item in resp.get("Items", []):
+            sk = item["sk"]["S"]
+            if not sk.startswith("FOLDER#"):
+                continue
+            fid = sk[7:]
+            name = item.get("name", {}).get("S", "")
+            out.append({"id": fid, "name": name})
+        start_key = resp.get("LastEvaluatedKey")
+        if not start_key:
+            break
+    out.sort(key=lambda x: (x["name"] or "").lower())
+    return _response(200, {"folders": out})
+
+
+def create_user_folder(user_email: str, payload: dict) -> dict:
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return _response(400, {"error": "name required"})
+    fid = str(uuid.uuid4())
+    pk = _pk(user_email)
+    sk = f"FOLDER#{fid}"
+    ddb.put_item(
+        TableName=METADATA_TABLE,
+        Item={
+            "pk": {"S": pk},
+            "sk": {"S": sk},
+            "name": {"S": name[:500]},
+            "created_ts": {"N": str(int(time.time()))},
+        },
+    )
+    return _response(200, {"id": fid, "name": name})
+
+
+def delete_user_folder(user_email: str, folder_id: str) -> dict:
+    fid = urllib.parse.unquote((folder_id or "").strip())
+    if not fid:
+        return _response(400, {"error": "folder id required"})
+    try:
+        store = _folder_store_segment(fid)
+    except ValueError:
+        return _response(400, {"error": "invalid folder id"})
+    pk = _pk(user_email)
+    prefix = f"MSG#{store}#"
+    sks: list[str] = []
+    start_key = None
+    while True:
+        kw = {
+            "TableName": METADATA_TABLE,
+            "KeyConditionExpression": "pk = :pk AND begins_with(sk, :pre)",
+            "ExpressionAttributeValues": {":pk": {"S": pk}, ":pre": {"S": prefix}},
+        }
+        if start_key:
+            kw["ExclusiveStartKey"] = start_key
+        resp = ddb.query(**kw)
+        for item in resp.get("Items", []):
+            sks.append(item["sk"]["S"])
+        start_key = resp.get("LastEvaluatedKey")
+        if not start_key:
+            break
+    for sk in sks:
+        mv = move_message(user_email, sk, "inbox")
+        if mv.get("statusCode") != 200:
+            return mv
+    ddb.delete_item(
+        TableName=METADATA_TABLE,
+        Key={"pk": {"S": pk}, "sk": {"S": f"FOLDER#{fid}"}},
+    )
+    return _response(200, {"ok": True})
+
+
 def lambda_handler(event, context):
     method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
     path = event.get("rawPath", "") or ""
@@ -473,6 +614,17 @@ def lambda_handler(event, context):
         return get_content(user_email, sk)
 
     body = _parse_json_body(event)
+
+    if path == "/mail/user-folders" and method == "GET":
+        return list_user_folders(user_email)
+
+    if path == "/mail/user-folders" and method == "POST":
+        return create_user_folder(user_email, body)
+
+    if method == "DELETE" and path.startswith("/mail/user-folders/"):
+        tail = path[len("/mail/user-folders/") :].strip("/")
+        if tail:
+            return delete_user_folder(user_email, tail)
 
     if path == "/mail/message" and method == "PATCH":
         sk_raw = body.get("sk") or qs.get("sk")

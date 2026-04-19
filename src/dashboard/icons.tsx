@@ -197,3 +197,23 @@ export function IconMove({ className, title }: IconProps) {
     </svg>
   )
 }
+
+export function IconReply({ className, title }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
+      {title ? <title>{title}</title> : null}
+      <path d="M9 14L4 9l5-5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M4 9h10.5a5.5 5.5 0 010 11H12" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+export function IconForward({ className, title }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
+      {title ? <title>{title}</title> : null}
+      <path d="M15 14l5-5-5-5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M20 9H9.5a5.5 5.5 0 100 11H12" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}

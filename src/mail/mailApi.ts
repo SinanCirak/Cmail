@@ -1,4 +1,4 @@
-import type { MailFolder, MailMessage } from '../types/mail'
+import type { MailFolder, MailContact, MailMessage } from '../types/mail'
 
 const noCache: RequestInit = { cache: 'no-store' }
 
@@ -32,8 +32,14 @@ function toMailMessage(row: ApiMailRow): MailMessage {
   }
 }
 
-export async function fetchLiveMailbox(apiBase: string, token: string): Promise<MailMessage[]> {
-  const folders: MailFolder[] = ['inbox', 'sent', 'drafts', 'spam', 'trash']
+export async function fetchLiveMailbox(
+  apiBase: string,
+  token: string,
+  userFolders: { id: string }[],
+): Promise<MailMessage[]> {
+  const sys: MailFolder[] = ['inbox', 'sent', 'drafts', 'spam', 'trash']
+  const customs: MailFolder[] = userFolders.map((f) => `custom:${f.id}` as MailFolder)
+  const folders = [...sys, ...customs]
   const chunks = await Promise.all(
     folders.map(async (folder) => {
       const res = await fetch(`${apiBase}/mail/messages?folder=${encodeURIComponent(folder)}`, {
@@ -51,13 +57,54 @@ export async function fetchLiveMailbox(apiBase: string, token: string): Promise<
   return chunks.flat()
 }
 
-/** System folder ids accepted by PATCH /mail/message */
-export async function moveMailMessage(
+export async function fetchUserFolders(apiBase: string, token: string): Promise<{ id: string; name: string }[]> {
+  const res = await fetch(`${apiBase}/mail/user-folders`, {
+    ...noCache,
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(t || `HTTP ${res.status}`)
+  }
+  const data = (await res.json()) as { folders: { id: string; name: string }[] }
+  return data.folders ?? []
+}
+
+export async function createUserFolderApi(
   apiBase: string,
   token: string,
-  sk: string,
-  folder: 'inbox' | 'sent' | 'drafts' | 'spam' | 'trash',
-): Promise<void> {
+  name: string,
+): Promise<{ id: string; name: string }> {
+  const res = await fetch(`${apiBase}/mail/user-folders`, {
+    ...noCache,
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(t || `HTTP ${res.status}`)
+  }
+  return (await res.json()) as { id: string; name: string }
+}
+
+export async function deleteUserFolderApi(apiBase: string, token: string, folderId: string): Promise<void> {
+  const res = await fetch(`${apiBase}/mail/user-folders/${encodeURIComponent(folderId)}`, {
+    ...noCache,
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(t || `HTTP ${res.status}`)
+  }
+}
+
+/** Move message to a system folder or `custom:<uuid>`. */
+export async function moveMailMessage(apiBase: string, token: string, sk: string, folder: string): Promise<void> {
   const res = await fetch(`${apiBase}/mail/message`, {
     ...noCache,
     method: 'PATCH',
@@ -106,11 +153,17 @@ export async function deleteMailMessage(apiBase: string, token: string, sk: stri
   }
 }
 
-export async function fetchMailBody(
-  apiBase: string,
-  token: string,
-  s3Key: string,
-): Promise<{ body: string; isHtml: boolean }> {
+export type MailContentPayload = {
+  body: string
+  isHtml: boolean
+  attachments?: { name: string }[]
+  from?: MailContact | null
+  to?: MailContact[]
+  cc?: MailContact[]
+  bcc?: MailContact[]
+}
+
+export async function fetchMailBody(apiBase: string, token: string, s3Key: string): Promise<MailContentPayload> {
   const qs = new URLSearchParams({ s3_key: s3Key })
   const res = await fetch(`${apiBase}/mail/content?${qs.toString()}`, {
     ...noCache,
@@ -120,8 +173,7 @@ export async function fetchMailBody(
     const t = await res.text()
     throw new Error(t || `HTTP ${res.status}`)
   }
-  const data = (await res.json()) as { body: string; isHtml: boolean }
-  return data
+  return (await res.json()) as MailContentPayload
 }
 
 export function mailApiConfigured(): boolean {

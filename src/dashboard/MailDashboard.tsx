@@ -2,9 +2,12 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { getBearerTokenForApi, getSession } from '../auth/cognito'
 import { mockEmails } from '../data/mockEmails'
 import {
+  createUserFolderApi,
   deleteMailMessage,
+  deleteUserFolderApi,
   fetchLiveMailbox,
   fetchMailBody,
+  fetchUserFolders,
   mailApiBaseUrl,
   mailApiConfigured,
   moveMailMessage,
@@ -24,11 +27,13 @@ import {
   IconDraft,
   IconFolder,
   IconFolderPlus,
+  IconForward,
   IconInbox,
   IconMenu,
   IconMoon,
   IconMove,
   IconPaperclip,
+  IconReply,
   IconRefresh,
   IconSearch,
   IconSend,
@@ -346,10 +351,31 @@ function filterByFolder(emails: MailMessage[], folder: NavFolder): MailMessage[]
   return emails.filter((m) => m.folder === folder)
 }
 
-function looksLikeHtmlBody(body: string): boolean {
+function looksLikeHtmlBody(body: string, explicit?: boolean): boolean {
+  if (explicit === true) return true
+  if (explicit === false) return false
   const t = body.trim()
   if (!t.startsWith('<')) return false
   return /<\/(p|div|h[1-6]|ul|ol|li|br|span)\s*>/i.test(t) || /<p[\s>]/.test(t)
+}
+
+function stripHtml(html: string): string {
+  if (typeof window === 'undefined') return html.replace(/<[^>]+>/g, ' ')
+  const d = document.createElement('div')
+  d.innerHTML = html
+  return (d.innerText || d.textContent || '').trim()
+}
+
+function emailFromIdToken(): string | null {
+  const s = getSession()
+  if (!s?.idToken) return null
+  try {
+    const p = JSON.parse(atob(s.idToken.split('.')[1])) as Record<string, unknown>
+    const em = p.email
+    return typeof em === 'string' ? em : null
+  } catch {
+    return null
+  }
 }
 
 function filterBySearch(emails: MailMessage[], q: string): MailMessage[] {
@@ -531,7 +557,10 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     setMailLoadError(null)
     fetchedBodyIds.current.clear()
     try {
-      const list = await fetchLiveMailbox(mailApiBase, getBearerTokenForApi(session))
+      const token = getBearerTokenForApi(session)
+      const folders = await fetchUserFolders(mailApiBase, token)
+      setUserFolders(folders)
+      const list = await fetchLiveMailbox(mailApiBase, token, folders)
       setEmails(list)
     } catch (e) {
       setMailLoadError(e instanceof Error ? e.message : 'Could not load mail.')
@@ -559,10 +588,27 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
 
     ;(async () => {
       try {
-        const { body } = await fetchMailBody(mailApiBase, getBearerTokenForApi(session), key)
+        const payload = await fetchMailBody(mailApiBase, getBearerTokenForApi(session), key)
         if (cancelled) return
         fetchedBodyIds.current.add(id)
-        setEmails((prev) => prev.map((m) => (m.id === id ? { ...m, body } : m)))
+        const atts = payload.attachments?.map((a) => ({ name: a.name }))
+        setEmails((prev) =>
+          prev.map((m) =>
+            m.id === id
+              ? {
+                  ...m,
+                  body: payload.body,
+                  bodyIsHtml: payload.isHtml,
+                  to: payload.to?.length ? payload.to : m.to,
+                  cc: payload.cc?.length ? payload.cc : m.cc,
+                  bcc: payload.bcc?.length ? payload.bcc : m.bcc,
+                  from: payload.from ?? m.from,
+                  attachments:
+                    atts && atts.length > 0 ? atts : m.attachments,
+                }
+              : m,
+          ),
+        )
       } catch (e) {
         if (cancelled) return
         fetchedBodyIds.current.add(id)
@@ -595,18 +641,11 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
 
   const moveMessage = useCallback(
     async (messageId: string, target: MailFolder) => {
-      if (String(target).startsWith('custom:')) {
-        setEmails((prev) =>
-          prev.map((m) => (m.id === messageId ? { ...m, folder: target } : m)),
-        )
-        return
-      }
       if (useLiveMail && mailApiBase) {
         const session = getSession()
         if (!session) return
-        const folder = target as 'inbox' | 'sent' | 'drafts' | 'spam' | 'trash'
         try {
-          await moveMailMessage(mailApiBase, getBearerTokenForApi(session), messageId, folder)
+          await moveMailMessage(mailApiBase, getBearerTokenForApi(session), messageId, target)
           await loadLiveMailbox()
         } catch (e) {
           setMailLoadError(e instanceof Error ? e.message : 'Move failed')
@@ -690,32 +729,62 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     return [...sys, ...custom]
   }, [userFolders])
 
-  const createFolderQuick = useCallback(() => {
+  const createFolderQuick = useCallback(async () => {
     const name = newFolderName.trim()
     if (!name) return
+    if (useLiveMail && mailApiBase) {
+      const session = getSession()
+      if (!session) return
+      try {
+        const created = await createUserFolderApi(mailApiBase, getBearerTokenForApi(session), name)
+        setNewFolderName('')
+        setNewFolderOpen(false)
+        setSidebarOpen(false)
+        await loadLiveMailbox()
+        setFolder(customFolderKey(created.id))
+      } catch (e) {
+        setMailLoadError(e instanceof Error ? e.message : 'Could not create folder')
+      }
+      return
+    }
     const id = crypto.randomUUID()
     setUserFolders((prev) => [...prev, { id, name }])
     setFolder(customFolderKey(id))
     setNewFolderName('')
     setNewFolderOpen(false)
     setSidebarOpen(false)
-  }, [newFolderName])
+  }, [newFolderName, useLiveMail, mailApiBase, loadLiveMailbox])
 
-  const deleteUserFolder = useCallback((uf: UserFolder) => {
-    const key = customFolderKey(uf.id)
-    const n = emails.filter((m) => m.folder === key).length
-    const ok = window.confirm(
-      n > 0
-        ? `Delete folder “${uf.name}” and move ${n} message(s) to Inbox?`
-        : `Delete folder “${uf.name}”?`,
-    )
-    if (!ok) return
-    setEmails((prev) =>
-      prev.map((m) => (m.folder === key ? { ...m, folder: 'inbox' as const } : m)),
-    )
-    setUserFolders((prev) => prev.filter((f) => f.id !== uf.id))
-    if (folder === key) setFolder('inbox')
-  }, [emails, folder])
+  const deleteUserFolder = useCallback(
+    async (uf: UserFolder) => {
+      const key = customFolderKey(uf.id)
+      const n = emails.filter((m) => m.folder === key).length
+      const ok = window.confirm(
+        n > 0
+          ? `Delete folder “${uf.name}” and move ${n} message(s) to Inbox?`
+          : `Delete folder “${uf.name}”?`,
+      )
+      if (!ok) return
+      if (useLiveMail && mailApiBase) {
+        const session = getSession()
+        if (!session) return
+        try {
+          await deleteUserFolderApi(mailApiBase, getBearerTokenForApi(session), uf.id)
+          await loadLiveMailbox()
+          if (folder === key) setFolder('inbox')
+        } catch (e) {
+          setMailLoadError(e instanceof Error ? e.message : 'Could not delete folder')
+        }
+        return
+      }
+      setEmails((prev) =>
+        prev.map((m) => (m.folder === key ? { ...m, folder: 'inbox' as const } : m)),
+      )
+      setUserFolders((prev) => prev.filter((f) => f.id !== uf.id))
+      if (folder === key) setFolder('inbox')
+    },
+    [emails, folder, useLiveMail, mailApiBase, loadLiveMailbox],
+  )
 
   const resetCompose = useCallback(() => {
     setComposeTo('')
@@ -778,6 +847,36 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     resetCompose()
     setComposeOpen(true)
   }, [resetCompose])
+
+  const openReply = useCallback(() => {
+    if (!selected) return
+    resetCompose()
+    setComposeTo(selected.from.email || '')
+    const subj = selected.subject.trim()
+    setComposeSubject(subj.toLowerCase().startsWith('re:') ? subj : `Re: ${subj}`)
+    const plain = looksLikeHtmlBody(selected.body, selected.bodyIsHtml)
+      ? stripHtml(selected.body)
+      : selected.body
+    setComposeBody(
+      `\n\n---\nOn ${formatFullDate(selected.sentAt)}, ${selected.from.name} wrote:\n${plain.slice(0, 8000)}`,
+    )
+    setComposeOpen(true)
+  }, [selected, resetCompose])
+
+  const openForward = useCallback(() => {
+    if (!selected) return
+    resetCompose()
+    setComposeTo('')
+    const subj = selected.subject.trim()
+    setComposeSubject(subj.toLowerCase().startsWith('fwd:') ? subj : `Fwd: ${subj}`)
+    const plain = looksLikeHtmlBody(selected.body, selected.bodyIsHtml)
+      ? stripHtml(selected.body)
+      : selected.body
+    setComposeBody(
+      `\n\n---------- Forwarded message ----------\nFrom: ${selected.from.name} <${selected.from.email}>\nDate: ${formatFullDate(selected.sentAt)}\nSubject: ${selected.subject}\n\n${plain.slice(0, 12000)}`,
+    )
+    setComposeOpen(true)
+  }, [selected, resetCompose])
 
   return (
     <div className={`cm-shell ${theme === 'dark' ? 'cm-shell--dark' : ''}`}>
@@ -944,7 +1043,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                     value={newFolderName}
                     onChange={(e) => setNewFolderName(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') createFolderQuick()
+                      if (e.key === 'Enter') void createFolderQuick()
                       if (e.key === 'Escape') {
                         setNewFolderOpen(false)
                         setNewFolderName('')
@@ -952,7 +1051,11 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                     }}
                     autoFocus
                   />
-                  <button type="button" className="cm-btn cm-btn--primary cm-btn--sm" onClick={createFolderQuick}>
+                  <button
+                    type="button"
+                    className="cm-btn cm-btn--primary cm-btn--sm"
+                    onClick={() => void createFolderQuick()}
+                  >
                     Add
                   </button>
                 </div>
@@ -1209,11 +1312,23 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                           </div>
                           <div className="cm-read__to-line">
                             To:{' '}
-                            {selected.to.map((t) => (
-                              <span key={t.email}>
-                                {t.name} &lt;{t.email}&gt;{' '}
+                            {selected.to.length > 0 ? (
+                              selected.to.map((t) => (
+                                <span key={`${t.email}-${t.name}`}>
+                                  {t.name} &lt;{t.email}&gt;{' '}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="cm-read__to-fallback">
+                                {emailFromIdToken() ? (
+                                  <>
+                                    You &lt;{emailFromIdToken()}&gt;
+                                  </>
+                                ) : (
+                                  '—'
+                                )}
                               </span>
-                            ))}
+                            )}
                           </div>
                           {selected.cc?.length ? (
                             <div className="cm-read__cc-line">
@@ -1270,12 +1385,30 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                       </div>
                     ) : null}
                   </header>
+                  <div className="cm-read__actions" role="toolbar" aria-label="Message actions">
+                    <button type="button" className="cm-read__action-btn" onClick={() => openReply()}>
+                      <IconReply className="cm-icon" />
+                      Reply
+                    </button>
+                    <button type="button" className="cm-read__action-btn" onClick={() => openForward()}>
+                      <IconForward className="cm-icon" />
+                      Forward
+                    </button>
+                    <button
+                      type="button"
+                      className="cm-read__action-btn cm-read__action-btn--danger"
+                      onClick={() => void deleteOrTrashMessage(selected.id)}
+                    >
+                      <IconTrash className="cm-icon" />
+                      {selected.folder === 'trash' ? 'Delete permanently' : 'Trash'}
+                    </button>
+                  </div>
                   <div
-                    className={`cm-read__body ${looksLikeHtmlBody(selected.body) ? 'cm-read__body--html' : ''}`}
+                    className={`cm-read__body ${looksLikeHtmlBody(selected.body, selected.bodyIsHtml) ? 'cm-read__body--html' : ''}`}
                   >
                     {contentBusyId === selected.id ? (
                       <p className="cm-read__loading">Loading message…</p>
-                    ) : looksLikeHtmlBody(selected.body) ? (
+                    ) : looksLikeHtmlBody(selected.body, selected.bodyIsHtml) ? (
                       <div
                         className="cm-read__html"
                         dangerouslySetInnerHTML={{ __html: selected.body }}

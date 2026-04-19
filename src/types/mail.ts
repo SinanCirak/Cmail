@@ -33,6 +33,8 @@ export interface MailMessage {
   subject: string
   snippet: string
   body: string
+  /** When set, preferred over guessing HTML from body text (live API). */
+  bodyIsHtml?: boolean
   sentAt: string
   read: boolean
   starred: boolean
