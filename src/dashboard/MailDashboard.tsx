@@ -532,6 +532,23 @@ function filterBySearch(emails: MailMessage[], q: string): MailMessage[] {
   })
 }
 
+function normalizeThreadSubject(subject: string): string {
+  let s = (subject || '').trim().toLowerCase()
+  // Collapse common reply/forward prefixes so "Re: Re: X" and "Fwd: X" group together.
+  while (true) {
+    const next = s.replace(/^(re|fw|fwd)\s*:\s*/i, '').trim()
+    if (next === s) break
+    s = next
+  }
+  return s || '(no subject)'
+}
+
+function threadKeyForMessage(m: MailMessage): string {
+  const subj = normalizeThreadSubject(m.subject)
+  // Keep grouping conservative: same mailbox folder + normalized subject.
+  return `${m.folder}::${subj}`
+}
+
 export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const useLiveMail = mailApiConfigured()
   const mailApiBase = mailApiBaseUrl()
@@ -661,11 +678,27 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     return c
   }, [emails])
 
-  const listEmails = useMemo(() => {
+  const listEmails = useMemo<(MailMessage & { threadCount?: number })[]>(() => {
     const byFolder = filterByFolder(emails, folder)
-    return filterBySearch(byFolder, search).sort(
+    const searched = filterBySearch(byFolder, search).sort(
       (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime(),
     )
+
+    const grouped = new Map<string, MailMessage & { threadCount?: number }>()
+    for (const msg of searched) {
+      const key = threadKeyForMessage(msg)
+      const current = grouped.get(key)
+      if (!current) {
+        grouped.set(key, { ...msg, threadCount: 1, read: msg.read })
+        continue
+      }
+      const count = (current.threadCount ?? 1) + 1
+      const unread = !msg.read || !current.read
+      // Keep newest message details while aggregating unread/count.
+      grouped.set(key, { ...current, threadCount: count, read: !unread })
+    }
+
+    return [...grouped.values()]
   }, [emails, folder, search])
 
   const selected = useMemo(
@@ -1675,7 +1708,10 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                     >
                       <span className="cm-row__from">{m.from.name}</span>
                       <span className="cm-row__subject-block">
-                        <span className="cm-row__subject">{m.subject}</span>
+                        <span className="cm-row__subject">
+                          {m.subject}
+                          {m.threadCount && m.threadCount > 1 ? ` (${m.threadCount})` : ''}
+                        </span>
                         <span className="cm-row__sep"> — </span>
                         <span className="cm-row__snippet">{m.snippet}</span>
                       </span>
