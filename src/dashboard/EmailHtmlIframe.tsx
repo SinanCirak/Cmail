@@ -8,6 +8,9 @@ type Props = {
 
 /**
  * Renders untrusted HTML mail in a sandboxed iframe so newsletter CSS cannot break the app shell.
+ * `allow-same-origin` is required so the parent can access contentDocument to inject HTML and measure height;
+ * without it, contentDocument is null (unique opaque origin) and the pane stays blank.
+ * Scripts are still blocked (no allow-scripts).
  * Tracking pixels (1×1) are hidden; images are constrained.
  */
 export function EmailHtmlIframe({ html, dark }: Props) {
@@ -79,7 +82,7 @@ export function EmailHtmlIframe({ html, dark }: Props) {
       ref={ref}
       className="cm-read__iframe"
       title="Email message"
-      sandbox="allow-popups allow-popups-to-escape-sandbox"
+      sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
     />
   )
 }
