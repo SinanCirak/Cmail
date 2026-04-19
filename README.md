@@ -6,6 +6,7 @@
 
 Cmail is a serverless email and file management system built on AWS.
 It provides a lightweight alternative to traditional mailbox stacks by using S3, Lambda, and API Gateway as the core platform.
+This project is built as a serverless alternative to traditional email systems, especially with the upcoming deprecation of Amazon WorkMail.
 
 ## 📈 Impact
 
@@ -21,6 +22,17 @@ I built Cmail to run custom mail operations end-to-end on AWS with:
 - **User-scoped mail access** via Cognito-authenticated API routes
 - **Modern mailbox UX** (thread grouping, bulk actions, read/unread state, folder management)
 
+## 🧰 Tech Stack
+
+- **Frontend:** React + TypeScript + Vite
+- **Backend:** AWS Lambda (Python)
+- **API:** AWS API Gateway (HTTP API)
+- **Storage:** Amazon S3 + DynamoDB
+- **Mail:** Amazon SES (inbound/outbound)
+- **Auth:** Amazon Cognito
+- **IaC:** Terraform
+- **Delivery:** CloudFront + Route 53 + GitHub Actions
+
 ## 🏗️ Architecture
 
 - **Frontend:** React SPA (Vite + TypeScript)
@@ -30,6 +42,22 @@ I built Cmail to run custom mail operations end-to-end on AWS with:
 - **Mail Transport:** Amazon SES (inbound + outbound)
 - **Auth:** Amazon Cognito
 - **Infra:** Terraform
+
+### Architecture Diagram
+
+```mermaid
+flowchart LR
+  U[User / Browser] --> FE[React SPA on S3 + CloudFront]
+  FE --> APIGW[API Gateway]
+  APIGW --> L[Lambda Mail API]
+  L --> DDB[(DynamoDB Metadata)]
+  L --> S3[(S3 Mail Archive)]
+  SESI[SES Inbound] --> S3
+  S3 --> INL[Lambda Inbound Indexer]
+  INL --> DDB
+  L --> SESO[SES Outbound]
+  FE --> COG[Cognito]
+```
 
 ## 🚀 Features
 
@@ -72,12 +100,25 @@ I built Cmail to run custom mail operations end-to-end on AWS with:
 - **DynamoDB metadata index** for fast mailbox/folder queries while keeping MIME payloads in S3.
 - **Terraform-first infrastructure** for reproducible, auditable setup.
 
+## 💡 Key Design Decisions
+
+- **Why Lambda over EC2:** auto-scaling, zero server maintenance, and pay-per-use economics for bursty mailbox workloads.
+- **Why API Gateway:** managed auth integration, routing, throttling, and stable public API front door for SPA clients.
+- **Why S3 for raw mail:** durable, low-cost object storage for MIME payloads while metadata/query workload stays in DynamoDB.
+- **Why no direct privileged S3 access from frontend:** keeps sensitive operations behind authenticated API policies.
+
 ## 🔍 Observability & Reliability
 
 - Lambda + API logs and metrics in CloudWatch
 - Idempotent-style object processing in inbound pipeline
 - Versioned mail-data bucket to protect against accidental data loss
 - Defensive API error handling (including explicit session-invalid messaging on 401)
+
+## 🏭 Production Mindset
+
+- **Scalable:** Lambda and API Gateway scale automatically with traffic.
+- **Secure:** mailbox state operations are handled via authenticated API calls, not direct privileged client writes.
+- **Cost-efficient:** fully serverless architecture with pay-per-use billing for compute and request paths.
 
 ## 🔄 CI/CD
 
