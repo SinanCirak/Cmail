@@ -268,6 +268,54 @@ def _contact_list(msg: Message, header: str) -> list[dict]:
     return out
 
 
+def _extract_mail_body(msg: Message) -> tuple[str, bool]:
+    """Return (body, is_html). Prefer HTML; skip attachment parts (fixes wrong/plain-only picks)."""
+    if not msg.is_multipart():
+        try:
+            payload = msg.get_payload(decode=True)
+            if isinstance(payload, bytes):
+                charset = msg.get_content_charset() or "utf-8"
+                text = payload.decode(charset, errors="replace")
+            else:
+                text = str(payload or "")
+            return text, msg.get_content_type() == "text/html"
+        except Exception:
+            return "", False
+
+    html_part = ""
+    plain_part = ""
+    for part in msg.walk():
+        disp = (part.get_content_disposition() or "").lower()
+        if disp == "attachment":
+            continue
+        ctype = part.get_content_type()
+        if ctype == "text/html" and not html_part:
+            try:
+                html_part = part.get_content()
+            except Exception:
+                pass
+        elif ctype == "text/plain" and not plain_part:
+            try:
+                plain_part = part.get_content()
+            except Exception:
+                pass
+
+    if html_part.strip():
+        return html_part, True
+    if plain_part.strip():
+        return plain_part, False
+    return "", False
+
+
+def _b64_decode_attachment(b64: str) -> bytes:
+    """Browser/FileReader base64 may lack padding; strict validate=False avoids PDF decode failures."""
+    s = re.sub(r"\s+", "", (b64 or "").strip())
+    pad = (-len(s)) % 4
+    if pad:
+        s += "=" * pad
+    return base64.b64decode(s, validate=False)
+
+
 def get_content(user_email: str, s3_key: str) -> dict:
     safe = _safe_mailbox(user_email)
     prefix = f"raw/{safe}/"
@@ -277,33 +325,7 @@ def get_content(user_email: str, s3_key: str) -> dict:
     raw = obj["Body"].read()
     msg = BytesParser(policy=policy.default).parsebytes(raw)
 
-    body_text = ""
-    body_html = ""
-    if msg.is_multipart():
-        for part in msg.walk():
-            ctype = part.get_content_type()
-            if ctype == "text/plain" and not body_text:
-                try:
-                    body_text = part.get_content()
-                except Exception:
-                    body_text = ""
-            elif ctype == "text/html" and not body_html:
-                try:
-                    body_html = part.get_content()
-                except Exception:
-                    body_html = ""
-    else:
-        try:
-            payload = msg.get_payload(decode=True)
-            if isinstance(payload, bytes):
-                body_text = payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
-            else:
-                body_text = str(payload or "")
-        except Exception:
-            body_text = ""
-
-    use_html = bool(body_html.strip())
-    body_out = body_html if use_html else body_text
+    body_out, use_html = _extract_mail_body(msg)
 
     attachments: list[dict] = []
     if msg.is_multipart():
@@ -498,9 +520,9 @@ def send_outbound(user_email: str, payload: dict) -> dict:
         if not b64:
             continue
         try:
-            raw_att = base64.b64decode(b64, validate=True)
-        except Exception:
-            return _response(400, {"error": f"invalid base64 attachment: {fn[:80]}"})
+            raw_att = _b64_decode_attachment(b64)
+        except Exception as e:
+            return _response(400, {"error": f"invalid base64 attachment {fn[:80]}: {e}"})
         total_att += len(raw_att)
         if total_att > 15 * 1024 * 1024:
             return _response(400, {"error": "attachments too large (max 15MB total)"})
@@ -509,6 +531,8 @@ def send_outbound(user_email: str, payload: dict) -> dict:
             main_t, sub_t = ctype.split("/", 1)
         else:
             main_t, sub_t = "application", "octet-stream"
+        if fn.lower().endswith(".pdf") and main_t == "application" and sub_t in ("octet-stream", "x-unknown"):
+            sub_t = "pdf"
         msg.add_attachment(raw_att, maintype=main_t, subtype=sub_t, filename=fn[:500])
 
     raw = msg.as_bytes(policy=policy.SMTP)

@@ -24,16 +24,20 @@ export function EmailHtmlIframe({ html, dark }: Props) {
     const link = dark ? '#38bdf8' : '#0284c7'
     const muted = dark ? '#94a3b8' : '#64748b'
 
-    const shell = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+    const shell = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
       * { box-sizing: border-box; }
       body {
         margin: 0;
         padding: 12px 10px 20px;
-        font: 15px/1.65 system-ui, -apple-system, 'Segoe UI', sans-serif;
+        font-size: 15px;
+        line-height: 1.65;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+          'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', sans-serif;
         color: ${fg};
         background: ${bg};
         word-wrap: break-word;
         overflow-wrap: anywhere;
+        -webkit-font-smoothing: antialiased;
       }
       img { max-width: 100% !important; height: auto !important; }
       img[width="1"][height="1"], img[width="0"][height="0"] { display: none !important; }

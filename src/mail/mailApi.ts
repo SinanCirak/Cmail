@@ -2,6 +2,17 @@ import type { MailFolder, MailContact, MailMessage } from '../types/mail'
 
 const noCache: RequestInit = { cache: 'no-store' }
 
+function guessMimeFromFilename(name: string, declared: string): string {
+  if (declared) return declared
+  const n = name.toLowerCase()
+  if (n.endsWith('.pdf')) return 'application/pdf'
+  if (n.endsWith('.png')) return 'image/png'
+  if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg'
+  if (n.endsWith('.gif')) return 'image/gif'
+  if (n.endsWith('.webp')) return 'image/webp'
+  return 'application/octet-stream'
+}
+
 type ApiMailRow = {
   id: string
   folder: string
@@ -138,7 +149,7 @@ export async function encodeFilesForMail(files: File[]): Promise<OutboundAttachm
             const i = s.indexOf(',')
             resolve({
               filename: f.name,
-              contentType: f.type || 'application/octet-stream',
+              contentType: guessMimeFromFilename(f.name, f.type),
               contentBase64: i >= 0 ? s.slice(i + 1) : s,
             })
           }
