@@ -1,178 +1,260 @@
-# Cmail (Vite + React)
+# Cmail - Cloud Mail Workspace
+
 [![CI](https://github.com/SinanCirak/CMail/actions/workflows/deploy-frontend.yml/badge.svg)](https://github.com/SinanCirak/CMail/actions/workflows/deploy-frontend.yml)
 
-Mail UI prototype (list + reading pane, compose, settings).
+**Tech Stack:** AWS (SES, Lambda, API Gateway, DynamoDB, S3, CloudFront, Route 53, Cognito), Terraform, React, TypeScript, Vite, GitHub Actions
 
-## Run locally
+Cmail is a full-stack, cloud-native mail application built around AWS SES inbound/outbound flows, a private S3 mail archive, and a modern React UI.
+
+## 📈 Impact
+
+Designed to replace hosted mailbox dependencies with a controlled, serverless architecture where receiving, storage, search/listing, and sending are managed in your own AWS account.
+
+## 💡 Why This Project?
+
+I built Cmail to run custom email operations end-to-end on AWS with:
+- **Domain-native mail flow** (receive + send) on SES
+- **Private archive ownership** in S3 and metadata indexing in DynamoDB
+- **User-scoped mail access** via Cognito-authenticated API routes
+- **Modern mailbox UX** (thread grouping, bulk actions, read/unread state, folder management)
+
+## 🚀 Features
+
+### Mailbox Experience
+- Multi-folder mail UI: Inbox, Sent, Drafts, Spam, Trash, custom folders
+- Thread-style list grouping for reply/forward chains
+- Bulk actions: move, delete, mark read/unread
+- Persistent read/unread state stored in DynamoDB
+- Compose with attachments and HTML body support
+- Auto-refresh polling and unread counter in browser tab title
+
+### Mail Inbound & Archive
+- SES inbound receipt rules
+- Raw MIME storage in private S3 (`raw/<mailbox>/<folder>/<uid>.eml`)
+- Lambda indexing pipeline from `ses-inbound/` into user mailbox structure
+- DynamoDB metadata table for listing/querying mailbox content
+
+### Mail Outbound
+- SES outbound send via API
+- Sent copy persisted into archive + metadata table
+- Domain identity + DKIM support via Terraform
+
+### Auth & Security
+- Cognito authentication (SRP-based sign-in flow)
+- JWT-protected API routes (API Gateway + Lambda)
+- User mailbox isolation by authenticated email claim
+- AES256 encryption on archived objects
+
+## 🏗️ Architecture
+
+### Frontend
+- React + TypeScript + Vite
+- Mail dashboard with split panes and responsive layout
+- Cognito session-based auth flow
+
+### Backend (Serverless)
+- API Gateway HTTP API
+- Python Lambda (`mail_api.py`, `mail_inbound_s3.py`, `auth_probe.py`)
+- DynamoDB for mailbox metadata and folder state
+- S3 for raw message archive and SES inbound staging
+- SES for receive/send mail traffic
+
+### Infrastructure
+- Terraform-managed AWS resources
+- CloudFront + S3 static site delivery
+- Route 53 + ACM (custom domain + TLS)
+- CI workflow for frontend deployment
+
+## ⚙️ Design Decisions
+
+- **SES + S3 archive** instead of hosted mailbox lock-in for full ownership and portability.
+- **Serverless API** to scale with demand and keep operational overhead low.
+- **DynamoDB metadata index** for fast mailbox/folder queries while keeping MIME payloads in S3.
+- **Terraform-first infrastructure** for reproducible, auditable setup.
+
+## 🔍 Observability & Reliability
+
+- Lambda + API logs and metrics in CloudWatch
+- Idempotent-style object processing in inbound pipeline
+- Versioned mail-data bucket to protect against accidental data loss
+- Defensive API error handling (including explicit session-invalid messaging on 401)
+
+## 🔄 CI/CD
+
+GitHub Actions deploys the static frontend on pushes to `main`:
+- install dependencies
+- build Vite bundle
+- sync `dist/` to S3
+- invalidate CloudFront cache
+
+Terraform applies are handled manually for controlled infrastructure and backend updates.
+
+## 🛠️ Setup & Installation
+
+### Prerequisites
+- Node.js 18+
+- Terraform 1.6+
+- AWS CLI configured with permissions
+- AWS account + Route 53 hosted zone for your domain
+
+### 1) Clone and install
 
 ```bash
+git clone https://github.com/SinanCirak/CMail.git
+cd Cmail
 npm install
-npm run dev
 ```
 
-App runs at `http://localhost:5173/`.
-
-## Build
-
-```bash
-npm run build
-```
-
-Static output is in `dist/`.
-
-## Deploy (static hosting)
-
-This app is a **static site**. You can deploy the `dist/` folder to any static host.
-
-### Option A — Netlify
-
-- Build command: `npm run build`
-- Publish directory: `dist`
-
-### Option B — Vercel
-
-- Framework preset: **Vite**
-- Build command: `npm run build`
-- Output directory: `dist`
-
-### Option C — AWS S3 + CloudFront
-
-- Upload `dist/` to an S3 bucket configured for static hosting
-- Set CloudFront origin to the bucket
-- For SPA routing (if you add it later), set CloudFront error response to serve `/index.html`
-
-## AWS production architecture
-
-This repository includes Terraform under `terraform/` for:
-
-- Route53 alias record for your app hostname
-- ACM certificate (us-east-1) for CloudFront
-- CloudFront + private S3 website bucket
-- Cognito User Pool (app sign-in uses SRP on your domain; legacy OAuth2+PKCE still works for `?code=` callbacks)
-- API Gateway HTTP API with JWT authorizer (Cognito)
-- Lambda sample protected endpoint (`GET /me`)
-
-### 1) Provision infrastructure
+### 2) Configure Terraform
 
 ```bash
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
+```
+
+Set values in `terraform.tfvars` (minimum):
+- `aws_region`
+- `domain_name`
+- `subdomain_name`
+- `hosted_zone_id`
+- `cognito_domain_prefix`
+
+For full SES mail flow:
+- `ses_mail_enabled = true`
+- `ses_inbound_enabled = true`
+- `ses_inbound_accept_all` or `ses_inbound_recipients`
+- `ses_publish_dns_records = true`
+
+### 3) Provision infrastructure
+
+```bash
 terraform init
 terraform plan
 terraform apply
 ```
 
-After apply, note these outputs:
-
-- `app_url`
-- `api_base_url`
-- `cognito_domain`
-- `cognito_client_id`
-- `cognito_user_pool_id`
-
-### 2) Configure frontend auth environment
+### 4) Configure frontend environment
 
 Create `.env.local` in project root:
 
-```bash
+```env
+VITE_MAIL_API_URL=<terraform output api_base_url>
 VITE_COGNITO_REGION=<your-aws-region>
 VITE_COGNITO_USER_POOL_ID=<terraform output -raw cognito_user_pool_id>
 VITE_COGNITO_DOMAIN=<terraform output cognito_domain>
 VITE_COGNITO_CLIENT_ID=<terraform output cognito_client_id>
-VITE_COGNITO_REDIRECT_URI=<terraform output app_url or your SPA URL>
-VITE_COGNITO_LOGOUT_URI=<same as redirect base URL>
+VITE_COGNITO_REDIRECT_URI=<terraform output app_url>
+VITE_COGNITO_LOGOUT_URI=<terraform output app_url>
 ```
 
-### 3) Build and upload UI
+### 5) Run locally
+
+```bash
+npm run dev
+```
+
+App runs at `http://localhost:5173`.
+
+## 🚀 Deployment
+
+### Frontend (manual)
 
 ```bash
 npm run build
-aws s3 sync dist/ s3://<terraform output site_bucket_name> --delete
+aws s3 sync dist/ s3://<terraform output -raw site_bucket_name> --delete
 aws cloudfront create-invalidation --distribution-id <distribution-id> --paths "/*"
 ```
 
-### 4) Create first user in Cognito
+### Frontend (CI)
 
-- AWS Console → Cognito → User Pools → select the pool created by Terraform
-- Create user with email
-- Mark email verified / set temporary password flow as needed
-- Open your deployed app URL from `terraform output app_url` and complete password change
+Push to `main` and let GitHub Actions deploy static assets.
 
-### Mail archive
+### Backend / Infra
 
-Terraform provisions a **private** mail-data bucket (not a public website) and a **DynamoDB** table for metadata (`s3_key`, subject, folder, etc.). Raw MIME lives under `raw/<mailbox>/…/*.eml`.
+Run `terraform apply` whenever Lambda or infrastructure changes are made.
 
-Use **`terraform output`** for resource names (for example `mail_data_bucket_name`, `mail_metadata_table_name`, `mail_sync_policy_arn`). Attach `mail_sync_policy_arn` only to the IAM principal that performs archive sync.
+## 📡 API Endpoints
 
-Optional: set `mail_sync_iam_user_name` in `terraform.tfvars` to attach that policy automatically.
+- `GET /mail/folders`
+- `GET /mail/messages?folder=<id>`
+- `GET /mail/content?s3_key=<key>`
+- `PATCH /mail/message` (move)
+- `PATCH /mail/messages/read` (batch read/unread)
+- `DELETE /mail/message`
+- `POST /mail/send`
+- `GET /mail/user-folders`
+- `POST /mail/user-folders`
+- `DELETE /mail/user-folders/{folderId}`
+- `GET /me` (auth probe)
 
-Keep any **IMAP → S3 import scripts, hosts, and passwords outside this repo**—wire them locally with outputs from Terraform and AWS credentials from your environment (never commit secrets).
+## 🖼️ Screenshots
 
-## Notes
+Create a `screenshots/` folder and add these files (exact names):
 
-The rest of this README is the original Vite template notes.
+- `cmail-login.png`
+- `cmail-inbox.png`
+- `cmail-threaded-list.png`
+- `cmail-compose.png`
+- `cmail-settings-account.png`
+- `cmail-settings-security.png`
+- `cmail-custom-folders.png`
+- `cmail-bulk-actions.png`
+- `cmail-unread-filter.png`
 
-## React Compiler
+### Login
+![Login](./screenshots/cmail-login.png)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### Inbox
+![Inbox](./screenshots/cmail-inbox.png)
 
-## Expanding the ESLint configuration
+### Threaded List
+![Threaded List](./screenshots/cmail-threaded-list.png)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### Compose
+![Compose](./screenshots/cmail-compose.png)
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### Settings - Account
+![Settings Account](./screenshots/cmail-settings-account.png)
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### Settings - Security
+![Settings Security](./screenshots/cmail-settings-security.png)
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### Custom Folders
+![Custom Folders](./screenshots/cmail-custom-folders.png)
+
+### Bulk Actions
+![Bulk Actions](./screenshots/cmail-bulk-actions.png)
+
+### Unread Filter
+![Unread Filter](./screenshots/cmail-unread-filter.png)
+
+## 📁 Project Structure
+
+```text
+Cmail/
+├── src/
+│   ├── auth/
+│   ├── dashboard/
+│   ├── mail/
+│   └── types/
+├── terraform/
+│   ├── lambda/
+│   ├── main.tf
+│   ├── mail_api.tf
+│   ├── mail_data.tf
+│   ├── ses_inbound.tf
+│   └── terraform.tfvars.example
+├── scripts/
+├── .github/workflows/
+└── README.md
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## 🔐 Security Notes
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- Never commit `.env`, `.tfvars`, credentials, or mailbox secrets.
+- Keep IMAP migration tooling and credentials outside git.
+- Use least-privilege IAM for deploy and runtime roles.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## 👤 Author
+
+Sinan Cirak
