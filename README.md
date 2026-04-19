@@ -4,7 +4,8 @@
 
 **Tech Stack:** AWS (SES, Lambda, API Gateway, DynamoDB, S3, CloudFront, Route 53, Cognito), Terraform, React, TypeScript, Vite, GitHub Actions
 
-Cmail is a full-stack, cloud-native mail application built around AWS SES inbound/outbound flows, a private S3 mail archive, and a modern React UI.
+Cmail is a serverless email and file management system built on AWS.
+It provides a lightweight alternative to traditional mailbox stacks by using S3, Lambda, and API Gateway as the core platform.
 
 ## 📈 Impact
 
@@ -12,11 +13,23 @@ Designed to replace hosted mailbox dependencies with a controlled, serverless ar
 
 ## 💡 Why This Project?
 
-I built Cmail to run custom email operations end-to-end on AWS with:
+With Amazon WorkMail being phased out, this project explores a practical serverless replacement path for email-like storage and operations without relying on a traditional IMAP-first server setup.
+
+I built Cmail to run custom mail operations end-to-end on AWS with:
 - **Domain-native mail flow** (receive + send) on SES
 - **Private archive ownership** in S3 and metadata indexing in DynamoDB
 - **User-scoped mail access** via Cognito-authenticated API routes
 - **Modern mailbox UX** (thread grouping, bulk actions, read/unread state, folder management)
+
+## 🏗️ Architecture
+
+- **Frontend:** React SPA (Vite + TypeScript)
+- **API Layer:** AWS API Gateway (HTTP API)
+- **Backend:** AWS Lambda (Python)
+- **Storage:** Amazon S3 (raw MIME/object archive) + DynamoDB (metadata index)
+- **Mail Transport:** Amazon SES (inbound + outbound)
+- **Auth:** Amazon Cognito
+- **Infra:** Terraform
 
 ## 🚀 Features
 
@@ -28,7 +41,14 @@ I built Cmail to run custom email operations end-to-end on AWS with:
 - Compose with attachments and HTML body support
 - Auto-refresh polling and unread counter in browser tab title
 
-### Mail Inbound & Archive
+### File and Folder Management
+- Drag-and-drop upload flows for compose attachments
+- Folder-based navigation with system folders + user-defined folders
+- File listing backed by DynamoDB metadata and S3 object keys
+- Delete actions with explicit confirmation flows
+- Move/archive status workflows across folder states
+
+### Mail Inbound and Archive
 - SES inbound receipt rules
 - Raw MIME storage in private S3 (`raw/<mailbox>/<folder>/<uid>.eml`)
 - Lambda indexing pipeline from `ses-inbound/` into user mailbox structure
@@ -44,26 +64,6 @@ I built Cmail to run custom email operations end-to-end on AWS with:
 - JWT-protected API routes (API Gateway + Lambda)
 - User mailbox isolation by authenticated email claim
 - AES256 encryption on archived objects
-
-## 🏗️ Architecture
-
-### Frontend
-- React + TypeScript + Vite
-- Mail dashboard with split panes and responsive layout
-- Cognito session-based auth flow
-
-### Backend (Serverless)
-- API Gateway HTTP API
-- Python Lambda (`mail_api.py`, `mail_inbound_s3.py`, `auth_probe.py`)
-- DynamoDB for mailbox metadata and folder state
-- S3 for raw message archive and SES inbound staging
-- SES for receive/send mail traffic
-
-### Infrastructure
-- Terraform-managed AWS resources
-- CloudFront + S3 static site delivery
-- Route 53 + ACM (custom domain + TLS)
-- CI workflow for frontend deployment
 
 ## ⚙️ Design Decisions
 
@@ -254,6 +254,15 @@ Cmail/
 - Never commit `.env`, `.tfvars`, credentials, or mailbox secrets.
 - Keep IMAP migration tooling and credentials outside git.
 - Use least-privilege IAM for deploy and runtime roles.
+- No direct client-side privileged S3 write paths for mailbox state.
+
+## 🚀 Future Improvements
+
+- Inbound processing enhancements for richer threading heuristics
+- Gmail/third-party mailbox migration tooling
+- IMAP-compatible bridge for legacy clients
+- Enhanced multi-tenant mailbox administration
+- Extended auth hardening and policy controls
 
 ## 👤 Author
 
