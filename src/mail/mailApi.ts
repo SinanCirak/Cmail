@@ -2,6 +2,15 @@ import type { MailFolder, MailContact, MailMessage } from '../types/mail'
 
 const noCache: RequestInit = { cache: 'no-store' }
 
+async function failIfNotOk(res: Response): Promise<void> {
+  if (res.ok) return
+  const t = await res.text()
+  if (res.status === 401) {
+    throw new Error('Session expired or invalid. Please sign in again.')
+  }
+  throw new Error(t || `HTTP ${res.status}`)
+}
+
 function guessMimeFromFilename(name: string, declared: string): string {
   if (declared) return declared
   const n = name.toLowerCase()
@@ -57,10 +66,7 @@ export async function fetchLiveMailbox(
         ...noCache,
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!res.ok) {
-        const t = await res.text()
-        throw new Error(t || `HTTP ${res.status}`)
-      }
+      await failIfNotOk(res)
       const data = (await res.json()) as { messages: ApiMailRow[] }
       return data.messages.map(toMailMessage)
     }),
@@ -73,10 +79,7 @@ export async function fetchUserFolders(apiBase: string, token: string): Promise<
     ...noCache,
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(t || `HTTP ${res.status}`)
-  }
+  await failIfNotOk(res)
   const data = (await res.json()) as { folders: { id: string; name: string }[] }
   return data.folders ?? []
 }
@@ -95,10 +98,7 @@ export async function createUserFolderApi(
     },
     body: JSON.stringify({ name }),
   })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(t || `HTTP ${res.status}`)
-  }
+  await failIfNotOk(res)
   return (await res.json()) as { id: string; name: string }
 }
 
@@ -108,10 +108,7 @@ export async function deleteUserFolderApi(apiBase: string, token: string, folder
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(t || `HTTP ${res.status}`)
-  }
+  await failIfNotOk(res)
 }
 
 /** Move message to a system folder or `custom:<uuid>`. */
@@ -125,10 +122,7 @@ export async function moveMailMessage(apiBase: string, token: string, sk: string
     },
     body: JSON.stringify({ sk, folder }),
   })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(t || `HTTP ${res.status}`)
-  }
+  await failIfNotOk(res)
 }
 
 export type OutboundAttachment = {
@@ -181,10 +175,7 @@ export async function sendMailMessage(
     },
     body: JSON.stringify(payload),
   })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(t || `HTTP ${res.status}`)
-  }
+  await failIfNotOk(res)
 }
 
 export async function deleteMailMessage(apiBase: string, token: string, sk: string): Promise<void> {
@@ -194,10 +185,7 @@ export async function deleteMailMessage(apiBase: string, token: string, sk: stri
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(t || `HTTP ${res.status}`)
-  }
+  await failIfNotOk(res)
 }
 
 export async function markMailMessagesReadState(
@@ -217,10 +205,7 @@ export async function markMailMessagesReadState(
     },
     body: JSON.stringify({ sks: uniq, read }),
   })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(t || `HTTP ${res.status}`)
-  }
+  await failIfNotOk(res)
 }
 
 export type MailContentPayload = {
@@ -240,10 +225,7 @@ export async function fetchMailBody(apiBase: string, token: string, s3Key: strin
     ...noCache,
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(t || `HTTP ${res.status}`)
-  }
+  await failIfNotOk(res)
   return (await res.json()) as MailContentPayload
 }
 

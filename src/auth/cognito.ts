@@ -325,18 +325,8 @@ export async function updateDisplayNameWithSession(
       },
     )
   })
-
-  const updatedClaims = {
-    ...(decodeJwtClaims(session.idToken) ?? {}),
-    name,
-  }
-  const encoded = btoa(JSON.stringify(updatedClaims))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '')
-  const parts = session.idToken.split('.')
-  const idToken = parts.length === 3 ? `${parts[0]}.${encoded}.${parts[2]}` : session.idToken
-  return { ...session, idToken }
+  // Return original session tokens; JWT must remain signed by Cognito.
+  return session
 }
 
 export function clearSession() {

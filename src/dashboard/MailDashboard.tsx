@@ -638,11 +638,13 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const [folder, setFolder] = useState<NavFolder>('inbox')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [mobileShowDetail, setMobileShowDetail] = useState(false)
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(() => new Set())
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const sessionInvalid = mailLoadError?.includes('Session expired or invalid') ?? false
 
   const panesRef = useRef<HTMLElement | null>(null)
   const selectAllCheckboxRef = useRef<HTMLInputElement>(null)
@@ -740,28 +742,43 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     return c
   }, [emails])
 
-  const listEmails = useMemo<(MailMessage & { threadCount?: number })[]>(() => {
+  type ListMailRow = MailMessage & { threadCount?: number; threadIds?: string[] }
+  const listEmails = useMemo<ListMailRow[]>(() => {
     const byFolder = filterByFolder(emails, folder)
-    const searched = filterBySearch(byFolder, search).sort(
+    const byRead = showUnreadOnly ? byFolder.filter((m) => !m.read) : byFolder
+    const searched = filterBySearch(byRead, search).sort(
       (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime(),
     )
 
-    const grouped = new Map<string, MailMessage & { threadCount?: number }>()
+    const grouped = new Map<string, ListMailRow>()
     for (const msg of searched) {
       const key = threadKeyForMessage(msg)
       const current = grouped.get(key)
       if (!current) {
-        grouped.set(key, { ...msg, threadCount: 1, read: msg.read })
+        grouped.set(key, { ...msg, threadCount: 1, read: msg.read, threadIds: [msg.id] })
         continue
       }
       const count = (current.threadCount ?? 1) + 1
       const unread = !msg.read || !current.read
       // Keep newest message details while aggregating unread/count.
-      grouped.set(key, { ...current, threadCount: count, read: !unread })
+      grouped.set(key, {
+        ...current,
+        threadCount: count,
+        read: !unread,
+        threadIds: [...(current.threadIds ?? [current.id]), msg.id],
+      })
     }
 
     return [...grouped.values()]
-  }, [emails, folder, search])
+  }, [emails, folder, search, showUnreadOnly])
+
+  const actionIdsForDisplayId = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const row of listEmails) {
+      m.set(row.id, row.threadIds?.length ? row.threadIds : [row.id])
+    }
+    return m
+  }, [listEmails])
 
   const selected = useMemo(
     () => emails.find((m) => m.id === selectedId) ?? null,
@@ -769,10 +786,14 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   )
 
   const toolbarTargetIds = useMemo(() => {
-    if (bulkSelectedIds.size > 0) return [...bulkSelectedIds]
-    if (selectedId) return [selectedId]
+    const expand = (id: string) => actionIdsForDisplayId.get(id) ?? [id]
+    if (bulkSelectedIds.size > 0) {
+      const ids = [...bulkSelectedIds].flatMap(expand)
+      return [...new Set(ids)]
+    }
+    if (selectedId) return [...new Set(expand(selectedId))]
     return []
-  }, [bulkSelectedIds, selectedId])
+  }, [bulkSelectedIds, selectedId, actionIdsForDisplayId])
 
   const allBulkSelected =
     listEmails.length > 0 && listEmails.every((m) => bulkSelectedIds.has(m.id))
@@ -906,23 +927,25 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   }, [])
 
   const openMail = useCallback(async (id: string) => {
+    const ids = actionIdsForDisplayId.get(id) ?? [id]
+    const idSet = new Set(ids)
     setBulkSelectedIds(new Set())
     setSelectedId(id)
     setEmails((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, read: true } : m)),
+      prev.map((m) => (idSet.has(m.id) ? { ...m, read: true } : m)),
     )
     if (useLiveMail && mailApiBase) {
       const session = getSession()
       if (session) {
         try {
-          await markMailMessagesReadState(mailApiBase, getBearerTokenForApi(session), [id], true)
+          await markMailMessagesReadState(mailApiBase, getBearerTokenForApi(session), ids, true)
         } catch {
           // keep optimistic UI state even if network call fails
         }
       }
     }
     setMobileShowDetail(true)
-  }, [useLiveMail, mailApiBase])
+  }, [useLiveMail, mailApiBase, actionIdsForDisplayId])
 
   const loadLiveMailbox = useCallback(async (opts?: { silent?: boolean }) => {
     if (!useLiveMail || !mailApiBase) return
@@ -1446,6 +1469,17 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
           style={{ margin: '0.5rem 1rem 0', maxWidth: 720 }}
         >
           {mailLoadError}
+          {sessionInvalid && onLogout ? (
+            <div style={{ marginTop: '0.5rem' }}>
+              <button
+                type="button"
+                className="cm-btn cm-btn--ghost"
+                onClick={onLogout}
+              >
+                Sign in again
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
       <header className="cm-topbar" role="banner">
@@ -1698,6 +1732,14 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                 />
               </label>
               <div className="cm-toolbar__actions">
+                <button
+                  type="button"
+                  className="cm-toolbar__btn"
+                  title="Show only unread messages"
+                  onClick={() => setShowUnreadOnly((v) => !v)}
+                >
+                  <span className="cm-toolbar__btn-text">{showUnreadOnly ? 'All mail' : 'Unread only'}</span>
+                </button>
                 <button
                   type="button"
                   className="cm-toolbar__btn"
