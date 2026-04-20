@@ -19,6 +19,10 @@ export interface MailContact {
 
 export interface MailAttachment {
   name: string
+  /** MIME type if known (for open behavior). */
+  contentType?: string
+  /** Base64 payload from API; only for inbound message attachment open/download. */
+  contentBase64?: string
   /** Approximate size for display, bytes */
   size?: number
 }

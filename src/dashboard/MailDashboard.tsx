@@ -536,6 +536,14 @@ function formatBytes(n?: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function base64ToBlob(b64: string, contentType: string): Blob {
+  const bin = atob(b64)
+  const len = bin.length
+  const bytes = new Uint8Array(len)
+  for (let i = 0; i < len; i += 1) bytes[i] = bin.charCodeAt(i)
+  return new Blob([bytes], { type: contentType || 'application/octet-stream' })
+}
+
 function filterByFolder(emails: MailMessage[], folder: NavFolder): MailMessage[] {
   if (folder === 'starred') {
     return emails.filter((m) => m.starred && m.folder !== 'spam' && m.folder !== 'trash')
@@ -1049,7 +1057,12 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
         const payload = await fetchMailBody(mailApiBase, getBearerTokenForApi(session), key)
         if (cancelled) return
         fetchedBodyIds.current.add(id)
-        const atts = payload.attachments?.map((a) => ({ name: a.name }))
+        const atts = payload.attachments?.map((a) => ({
+          name: a.name,
+          size: a.size,
+          contentType: a.contentType,
+          contentBase64: a.contentBase64,
+        }))
         setEmails((prev) =>
           prev.map((m) =>
             m.id === id
@@ -1459,6 +1472,44 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     )
     setComposeOpen(true)
   }, [selected, resetCompose])
+
+  const openAttachment = useCallback((name: string, contentType?: string, contentBase64?: string) => {
+    if (!contentBase64) {
+      setMailLoadError('Attachment content is not available for this message.')
+      return
+    }
+    try {
+      const blob = base64ToBlob(contentBase64, contentType || 'application/octet-stream')
+      const url = URL.createObjectURL(blob)
+      const win = window.open(url, '_blank', 'noopener,noreferrer')
+      if (!win) {
+        setMailLoadError('Popup was blocked. Use Download for this attachment.')
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch {
+      setMailLoadError(`Could not open attachment: ${name}`)
+    }
+  }, [])
+
+  const downloadAttachment = useCallback((name: string, contentType?: string, contentBase64?: string) => {
+    if (!contentBase64) {
+      setMailLoadError('Attachment content is not available for this message.')
+      return
+    }
+    try {
+      const blob = base64ToBlob(contentBase64, contentType || 'application/octet-stream')
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name || 'attachment'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch {
+      setMailLoadError(`Could not download attachment: ${name}`)
+    }
+  }, [])
 
   return (
     <div className={`cm-shell ${theme === 'dark' ? 'cm-shell--dark' : ''}`}>
@@ -2041,11 +2092,24 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                         <ul className="cm-attachments__list">
                           {selected.attachments!.map((a) => (
                             <li key={a.name}>
-                              <button type="button" className="cm-attachment-chip">
+                              <button
+                                type="button"
+                                className="cm-attachment-chip"
+                                onClick={() => openAttachment(a.name, a.contentType, a.contentBase64)}
+                                title="Open attachment"
+                              >
                                 <span className="cm-attachment-chip__name">{a.name}</span>
                                 {a.size != null ? (
                                   <span className="cm-attachment-chip__size">{formatBytes(a.size)}</span>
                                 ) : null}
+                              </button>
+                              <button
+                                type="button"
+                                className="cm-attachment-chip"
+                                onClick={() => downloadAttachment(a.name, a.contentType, a.contentBase64)}
+                                title="Download attachment"
+                              >
+                                Download
                               </button>
                             </li>
                           ))}

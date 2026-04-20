@@ -426,7 +426,22 @@ def get_content(user_email: str, s3_key: str) -> dict:
             disp = part.get_content_disposition()
             if disp == "attachment":
                 fname = part.get_filename() or "attachment"
-                attachments.append({"name": fname})
+                ctype = (part.get_content_type() or "application/octet-stream").strip().lower()
+                try:
+                    payload = part.get_payload(decode=True)
+                except Exception:
+                    payload = None
+                if isinstance(payload, bytes) and payload:
+                    attachments.append(
+                        {
+                            "name": fname,
+                            "contentType": ctype,
+                            "contentBase64": base64.b64encode(payload).decode("ascii"),
+                            "size": len(payload),
+                        },
+                    )
+                else:
+                    attachments.append({"name": fname, "contentType": ctype})
 
     from_c = _contact_one(msg, "From")
     inline_images = _extract_inline_images(msg)

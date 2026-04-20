@@ -211,7 +211,7 @@ export async function markMailMessagesReadState(
 export type MailContentPayload = {
   body: string
   isHtml: boolean
-  attachments?: { name: string }[]
+  attachments?: { name: string; contentType?: string; contentBase64?: string; size?: number }[]
   inlineImages?: { cid: string; contentType: string; contentBase64: string }[]
   from?: MailContact | null
   to?: MailContact[]

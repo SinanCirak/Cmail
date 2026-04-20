@@ -1055,6 +1055,12 @@
   gap: 0.5rem;
 }
 
+.cm-attachments__list li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .cm-attachment-chip {
   display: inline-flex;
   align-items: center;
