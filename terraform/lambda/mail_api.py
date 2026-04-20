@@ -68,6 +68,9 @@ NAV_PRIMARY_STORE: dict[str, str] = {
     "trash": "Deleted_Items",
 }
 
+# User prefs (same table as mail metadata; does not collide with MSG# / FOLDER# sk).
+PREFS_TRUSTED_IMAGE_DOMAINS_SK = "PREFS#TRUSTED_IMAGE_DOMAINS"
+
 
 def _folder_uid_from_sk(sk: str) -> tuple[str, str]:
     if not sk.startswith("MSG#"):
@@ -772,6 +775,105 @@ def delete_user_folder(user_email: str, folder_id: str) -> dict:
     return _response(200, {"ok": True})
 
 
+def _normalize_trusted_image_domain(raw: str) -> str | None:
+    s = (raw or "").strip().lower().lstrip("@")
+    s = re.sub(r"\s+", "", s)
+    if not s or len(s) > 253:
+        return None
+    labels = s.split(".")
+    if not labels:
+        return None
+    for lab in labels:
+        if not lab or len(lab) > 63:
+            return None
+        if not re.fullmatch(r"[a-z0-9-]+", lab):
+            return None
+        if lab.startswith("-") or lab.endswith("-"):
+            return None
+    return s
+
+
+def _read_trusted_image_domains_list(pk: str) -> list[str]:
+    item = ddb.get_item(
+        TableName=METADATA_TABLE,
+        Key={"pk": {"S": pk}, "sk": {"S": PREFS_TRUSTED_IMAGE_DOMAINS_SK}},
+    ).get("Item")
+    if not item:
+        return []
+    dom_attr = item.get("domains")
+    if not dom_attr or "L" not in dom_attr:
+        return []
+    out: list[str] = []
+    for x in dom_attr.get("L", []):
+        s = (x.get("S") or "").strip().lower()
+        if s:
+            out.append(s)
+    return sorted(set(out))
+
+
+def _write_trusted_image_domains_list(pk: str, domains: list[str]) -> None:
+    uniq = sorted({d for d in domains if d})
+    key = {"pk": {"S": pk}, "sk": {"S": PREFS_TRUSTED_IMAGE_DOMAINS_SK}}
+    if not uniq:
+        try:
+            ddb.delete_item(TableName=METADATA_TABLE, Key=key)
+        except Exception:
+            pass
+        return
+    ddb.put_item(
+        TableName=METADATA_TABLE,
+        Item={
+            "pk": key["pk"],
+            "sk": key["sk"],
+            "domains": {"L": [{"S": d} for d in uniq]},
+            "updated_ts": {"N": str(int(time.time()))},
+        },
+    )
+
+
+def get_trusted_image_domains(user_email: str) -> dict:
+    pk = _pk(user_email)
+    domains = _read_trusted_image_domains_list(pk)
+    return _response(200, {"domains": domains})
+
+
+def add_trusted_image_domain(user_email: str, payload: dict) -> dict:
+    dom = _normalize_trusted_image_domain(str(payload.get("domain") or ""))
+    if not dom:
+        return _response(400, {"error": "invalid domain"})
+    pk = _pk(user_email)
+    existing = _read_trusted_image_domains_list(pk)
+    if dom not in existing:
+        existing.append(dom)
+        _write_trusted_image_domains_list(pk, existing)
+        existing = _read_trusted_image_domains_list(pk)
+    return _response(200, {"domains": existing})
+
+
+def remove_trusted_image_domain(user_email: str, domain_raw: str) -> dict:
+    dom = _normalize_trusted_image_domain(str(domain_raw or ""))
+    if not dom:
+        return _response(400, {"error": "invalid domain"})
+    pk = _pk(user_email)
+    existing = [d for d in _read_trusted_image_domains_list(pk) if d != dom]
+    _write_trusted_image_domains_list(pk, existing)
+    return _response(200, {"domains": existing})
+
+
+def set_trusted_image_domains(user_email: str, payload: dict) -> dict:
+    raw = payload.get("domains")
+    if not isinstance(raw, list):
+        return _response(400, {"error": "domains array required"})
+    out: list[str] = []
+    for x in raw:
+        d = _normalize_trusted_image_domain(str(x) if x is not None else "")
+        if d:
+            out.append(d)
+    pk = _pk(user_email)
+    _write_trusted_image_domains_list(pk, out)
+    return _response(200, {"domains": _read_trusted_image_domains_list(pk)})
+
+
 def lambda_handler(event, context):
     method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
     path = event.get("rawPath", "") or ""
@@ -803,6 +905,19 @@ def lambda_handler(event, context):
 
     if path == "/mail/user-folders" and method == "GET":
         return list_user_folders(user_email)
+
+    if path == "/mail/trusted-image-domains" and method == "GET":
+        return get_trusted_image_domains(user_email)
+
+    if path == "/mail/trusted-image-domains" and method == "POST":
+        return add_trusted_image_domain(user_email, body)
+
+    if path == "/mail/trusted-image-domains" and method == "PUT":
+        return set_trusted_image_domains(user_email, body)
+
+    if path == "/mail/trusted-image-domains" and method == "DELETE":
+        dom_q = (qs.get("domain") or body.get("domain") or "").strip()
+        return remove_trusted_image_domain(user_email, dom_q)
 
     if path == "/mail/user-folders" and method == "POST":
         return create_user_folder(user_email, body)

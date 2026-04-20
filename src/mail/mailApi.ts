@@ -229,6 +229,68 @@ export async function fetchMailBody(apiBase: string, token: string, s3Key: strin
   return (await res.json()) as MailContentPayload
 }
 
+/** Domains allowed to auto-load CID/inline images (stored in DynamoDB for live mail). */
+export async function fetchTrustedImageDomains(apiBase: string, token: string): Promise<string[]> {
+  const res = await fetch(`${apiBase}/mail/trusted-image-domains`, {
+    ...noCache,
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  await failIfNotOk(res)
+  const data = (await res.json()) as { domains?: string[] }
+  return data.domains ?? []
+}
+
+export async function addTrustedImageDomainApi(
+  apiBase: string,
+  token: string,
+  domain: string,
+): Promise<{ domains: string[] }> {
+  const res = await fetch(`${apiBase}/mail/trusted-image-domains`, {
+    ...noCache,
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ domain }),
+  })
+  await failIfNotOk(res)
+  return (await res.json()) as { domains: string[] }
+}
+
+export async function removeTrustedImageDomainApi(
+  apiBase: string,
+  token: string,
+  domain: string,
+): Promise<{ domains: string[] }> {
+  const qs = new URLSearchParams({ domain })
+  const res = await fetch(`${apiBase}/mail/trusted-image-domains?${qs.toString()}`, {
+    ...noCache,
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  await failIfNotOk(res)
+  return (await res.json()) as { domains: string[] }
+}
+
+export async function setTrustedImageDomainsApi(
+  apiBase: string,
+  token: string,
+  domains: string[],
+): Promise<{ domains: string[] }> {
+  const res = await fetch(`${apiBase}/mail/trusted-image-domains`, {
+    ...noCache,
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ domains }),
+  })
+  await failIfNotOk(res)
+  return (await res.json()) as { domains: string[] }
+}
+
 export function mailApiConfigured(): boolean {
   const v = import.meta.env.VITE_MAIL_API_URL
   return typeof v === 'string' && v.trim() !== ''

@@ -18,18 +18,22 @@ import {
 } from '../auth/cognito'
 import { mockEmails } from '../data/mockEmails'
 import {
+  addTrustedImageDomainApi,
   createUserFolderApi,
   deleteMailMessage,
   deleteUserFolderApi,
   fetchLiveMailbox,
   fetchMailBody,
+  fetchTrustedImageDomains,
   fetchUserFolders,
   mailApiBaseUrl,
   mailApiConfigured,
   markMailMessagesReadState,
   encodeFilesForMail,
   moveMailMessage,
+  removeTrustedImageDomainApi,
   sendMailMessage,
+  setTrustedImageDomainsApi,
 } from '../mail/mailApi'
 import type { MailFolder, MailMessage, NavFolder, UserFolder } from '../types/mail'
 import { customFolderKey } from '../types/mail'
@@ -91,6 +95,18 @@ function readTrustedImageDomains(): Set<string> {
   }
 }
 
+function writeTrustedImageDomainsLocal(domains: string[]) {
+  try {
+    if (domains.length === 0) {
+      localStorage.removeItem(STORAGE_TRUSTED_IMAGE_DOMAINS)
+    } else {
+      localStorage.setItem(STORAGE_TRUSTED_IMAGE_DOMAINS, JSON.stringify([...domains].sort()))
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 function emailDomainFromAddress(addr: string): string {
   const i = addr.lastIndexOf('@')
   if (i < 0) return ''
@@ -131,8 +147,8 @@ function SettingsModal(props: {
   initialDisplayName: string
   onDisplayNameSaved: (name: string) => void
   trustedDomains: string[]
-  onRemoveTrustedDomain: (domain: string) => void
-  onClearTrustedDomains: () => void
+  onRemoveTrustedDomain: (domain: string) => void | Promise<void>
+  onClearTrustedDomains: () => void | Promise<void>
 }) {
   const {
     open,
@@ -460,7 +476,7 @@ function SettingsModal(props: {
                         <button
                           type="button"
                           className="cm-btn cm-btn--ghost cm-btn--sm"
-                          onClick={() => onRemoveTrustedDomain(d)}
+                          onClick={() => void onRemoveTrustedDomain(d)}
                         >
                           Remove
                         </button>
@@ -470,7 +486,7 @@ function SettingsModal(props: {
                 )}
                 {trustedDomains.length > 0 ? (
                   <div className="cm-settings__actions">
-                    <button type="button" className="cm-btn cm-btn--ghost" onClick={() => onClearTrustedDomains()}>
+                    <button type="button" className="cm-btn cm-btn--ghost" onClick={() => void onClearTrustedDomains()}>
                       Clear all trusted domains
                     </button>
                   </div>
@@ -605,30 +621,6 @@ function filterBySearch(emails: MailMessage[], q: string): MailMessage[] {
   })
 }
 
-function normalizeThreadSubject(subject: string): { normalized: string; hadReplyPrefix: boolean } {
-  let s = (subject || '').trim().toLowerCase()
-  let hadReplyPrefix = false
-  // Collapse common reply/forward prefixes so "Re: Re: X" and "Fwd: X" group together.
-  while (true) {
-    const next = s.replace(/^(re|fw|fwd)\s*:\s*/i, '').trim()
-    if (next === s) break
-    hadReplyPrefix = true
-    s = next
-  }
-  return { normalized: s || '(no subject)', hadReplyPrefix }
-}
-
-function threadKeyForMessage(m: MailMessage): string {
-  const subj = normalizeThreadSubject(m.subject)
-  // Only group explicit reply/forward chains. Repeated standalone campaigns
-  // with identical subject (same sender) should remain separate rows.
-  if (!subj.hadReplyPrefix) {
-    return `single::${m.id}`
-  }
-  // Keep grouping conservative: same mailbox folder + normalized subject.
-  return `${m.folder}::${subj.normalized}`
-}
-
 export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const useLiveMail = mailApiConfigured()
   const mailApiBase = mailApiBaseUrl()
@@ -758,26 +750,9 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
       (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime(),
     )
 
-    const grouped = new Map<string, ListMailRow>()
-    for (const msg of searched) {
-      const key = threadKeyForMessage(msg)
-      const current = grouped.get(key)
-      if (!current) {
-        grouped.set(key, { ...msg, threadCount: 1, read: msg.read, threadIds: [msg.id] })
-        continue
-      }
-      const count = (current.threadCount ?? 1) + 1
-      const unread = !msg.read || !current.read
-      // Keep newest message details while aggregating unread/count.
-      grouped.set(key, {
-        ...current,
-        threadCount: count,
-        read: !unread,
-        threadIds: [...(current.threadIds ?? [current.id]), msg.id],
-      })
-    }
-
-    return [...grouped.values()]
+    // Do not collapse by "Re:/Fwd:" subject. Different mails can share the same
+    // subject prefix but still be separate messages for the user.
+    return searched.map((msg) => ({ ...msg, threadCount: 1, threadIds: [msg.id] }))
   }, [emails, folder, search, showUnreadOnly])
 
   const actionIdsForDisplayId = useMemo(() => {
@@ -815,21 +790,30 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     return false
   }, [selected, showImagesSessionIds, trustedImageDomains])
 
-  const trustSenderImagesDomain = useCallback(() => {
+  const trustSenderImagesDomain = useCallback(async () => {
     const d = selected ? emailDomainFromAddress(selected.from.email) : ''
     if (!d) return
+    if (useLiveMail && mailApiBase) {
+      const session = getSession()
+      if (!session) return
+      try {
+        const token = getBearerTokenForApi(session)
+        const { domains } = await addTrustedImageDomainApi(mailApiBase, token, d)
+        setTrustedImageDomains(new Set(domains))
+        writeTrustedImageDomainsLocal(domains)
+      } catch (e) {
+        setMailLoadError(e instanceof Error ? e.message : 'Could not save trusted domain.')
+      }
+      return
+    }
     setTrustedImageDomains((prev) => {
       if (prev.has(d)) return prev
       const n = new Set(prev)
       n.add(d)
-      try {
-        localStorage.setItem(STORAGE_TRUSTED_IMAGE_DOMAINS, JSON.stringify([...n]))
-      } catch {
-        /* ignore */
-      }
+      writeTrustedImageDomainsLocal([...n])
       return n
     })
-  }, [selected])
+  }, [selected, useLiveMail, mailApiBase])
 
   const showEmbeddedImagesOnce = useCallback(() => {
     if (!selected) return
@@ -840,29 +824,80 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     })
   }, [selected])
 
-  const removeTrustedDomain = useCallback((domain: string) => {
-    const d = domain.trim().toLowerCase()
-    if (!d) return
-    setTrustedImageDomains((prev) => {
-      const n = new Set(prev)
-      n.delete(d)
-      try {
-        localStorage.setItem(STORAGE_TRUSTED_IMAGE_DOMAINS, JSON.stringify([...n]))
-      } catch {
-        /* ignore */
+  const removeTrustedDomain = useCallback(
+    async (domain: string) => {
+      const d = domain.trim().toLowerCase()
+      if (!d) return
+      if (useLiveMail && mailApiBase) {
+        const session = getSession()
+        if (!session) return
+        try {
+          const token = getBearerTokenForApi(session)
+          const { domains } = await removeTrustedImageDomainApi(mailApiBase, token, d)
+          setTrustedImageDomains(new Set(domains))
+          writeTrustedImageDomainsLocal(domains)
+        } catch (e) {
+          setMailLoadError(e instanceof Error ? e.message : 'Could not remove trusted domain.')
+        }
+        return
       }
-      return n
-    })
-  }, [])
+      setTrustedImageDomains((prev) => {
+        const n = new Set(prev)
+        n.delete(d)
+        writeTrustedImageDomainsLocal([...n])
+        return n
+      })
+    },
+    [useLiveMail, mailApiBase],
+  )
 
-  const clearTrustedDomains = useCallback(() => {
-    setTrustedImageDomains(new Set())
-    try {
-      localStorage.removeItem(STORAGE_TRUSTED_IMAGE_DOMAINS)
-    } catch {
-      /* ignore */
+  const clearTrustedDomains = useCallback(async () => {
+    if (useLiveMail && mailApiBase) {
+      const session = getSession()
+      if (!session) return
+      try {
+        const token = getBearerTokenForApi(session)
+        const { domains } = await setTrustedImageDomainsApi(mailApiBase, token, [])
+        setTrustedImageDomains(new Set(domains))
+        writeTrustedImageDomainsLocal(domains)
+      } catch (e) {
+        setMailLoadError(e instanceof Error ? e.message : 'Could not clear trusted domains.')
+      }
+      return
     }
-  }, [])
+    setTrustedImageDomains(new Set())
+    writeTrustedImageDomainsLocal([])
+  }, [useLiveMail, mailApiBase])
+
+  useEffect(() => {
+    if (!useLiveMail || !mailApiBase) return
+    const session = getSession()
+    if (!session) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const token = getBearerTokenForApi(session)
+        const server = await fetchTrustedImageDomains(mailApiBase, token)
+        if (cancelled) return
+        const local = [...readTrustedImageDomains()]
+        const merged = [...new Set([...server, ...local])]
+        if (merged.length !== server.length) {
+          const { domains } = await setTrustedImageDomainsApi(mailApiBase, token, merged)
+          if (cancelled) return
+          setTrustedImageDomains(new Set(domains))
+          writeTrustedImageDomainsLocal(domains)
+          return
+        }
+        setTrustedImageDomains(new Set(server))
+        writeTrustedImageDomainsLocal(server)
+      } catch {
+        /* keep existing local state */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [useLiveMail, mailApiBase])
 
   useEffect(() => {
     setSelectedId((prev) => {
@@ -2154,7 +2189,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                           <button
                             type="button"
                             className="cm-btn cm-btn--ghost cm-btn--sm"
-                            onClick={() => trustSenderImagesDomain()}
+                            onClick={() => void trustSenderImagesDomain()}
                           >
                             Always show from @{emailDomainFromAddress(selected.from.email)}
                           </button>
