@@ -105,6 +105,7 @@ export default function App() {
 
   return (
     <MailDashboard
+      authSessionExpiresAt={session.expiresAt}
       onLogout={() => {
         signOutLocal()
         setSession(null)

@@ -176,6 +176,8 @@ function SettingsModal(props: {
   trustedDomains: string[]
   onRemoveTrustedDomain: (domain: string) => void | Promise<void>
   onClearTrustedDomains: () => void | Promise<void>
+  liveMailEnabled: boolean
+  trustedDomainsSyncError: string | null
 }) {
   const {
     open,
@@ -188,6 +190,8 @@ function SettingsModal(props: {
     trustedDomains,
     onRemoveTrustedDomain,
     onClearTrustedDomains,
+    liveMailEnabled,
+    trustedDomainsSyncError,
   } = props
   const [tab, setTab] = useState<SettingsTab>('account')
   const [displayName, setDisplayName] = useState('')
@@ -491,7 +495,15 @@ function SettingsModal(props: {
                 <p className="cm-settings__note">
                   Mail bodies can reference inline (CID) images. Those bytes stay on our servers until you choose to
                   render them. Domains you approve load logos and signatures automatically next time.
+                  {liveMailEnabled
+                    ? ' With live mail enabled, the approved domain list is loaded from your account on the server (and mirrored in this browser for speed).'
+                    : ''}
                 </p>
+                {trustedDomainsSyncError ? (
+                  <div className="cm-alert cm-alert--err" role="status" style={{ marginTop: '0.75rem' }}>
+                    {trustedDomainsSyncError}
+                  </div>
+                ) : null}
                 {trustedDomains.length === 0 ? (
                   <p className="cm-settings__v">No domains are trusted yet. Use “Always show from @domain” when
                     reading a message.</p>
@@ -648,7 +660,14 @@ function filterBySearch(emails: MailMessage[], q: string): MailMessage[] {
   })
 }
 
-export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
+export function MailDashboard({
+  onLogout,
+  authSessionExpiresAt,
+}: {
+  onLogout?: () => void
+  /** Re-run mail/trusted sync when the Cognito session identity or expiry changes. */
+  authSessionExpiresAt: number
+}) {
   const useLiveMail = mailApiConfigured()
   const mailApiBase = mailApiBaseUrl()
   const fetchedBodyIds = useRef<Set<string>>(new Set())
@@ -660,6 +679,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   )
   const [mailLoading, setMailLoading] = useState(false)
   const [mailLoadError, setMailLoadError] = useState<string | null>(null)
+  const [trustedDomainsSyncError, setTrustedDomainsSyncError] = useState<string | null>(null)
   const [contentBusyId, setContentBusyId] = useState<string | null>(null)
   const [userFolders, setUserFolders] = useState<UserFolder[]>(loadUserFolders)
   const [folder, setFolder] = useState<NavFolder>('inbox')
@@ -828,6 +848,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
         const { domains } = await addTrustedImageDomainApi(mailApiBase, token, d)
         setTrustedImageDomains(new Set(domains))
         writeTrustedImageDomainsLocal(domains)
+        setTrustedDomainsSyncError(null)
       } catch (e) {
         setMailLoadError(e instanceof Error ? e.message : 'Could not save trusted domain.')
       }
@@ -863,6 +884,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
           const { domains } = await removeTrustedImageDomainApi(mailApiBase, token, d)
           setTrustedImageDomains(new Set(domains))
           writeTrustedImageDomainsLocal(domains)
+          setTrustedDomainsSyncError(null)
         } catch (e) {
           setMailLoadError(e instanceof Error ? e.message : 'Could not remove trusted domain.')
         }
@@ -887,6 +909,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
         const { domains } = await setTrustedImageDomainsApi(mailApiBase, token, [])
         setTrustedImageDomains(new Set(domains))
         writeTrustedImageDomainsLocal(domains)
+        setTrustedDomainsSyncError(null)
       } catch (e) {
         setMailLoadError(e instanceof Error ? e.message : 'Could not clear trusted domains.')
       }
@@ -897,7 +920,10 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   }, [useLiveMail, mailApiBase])
 
   const syncTrustedImageDomainsFromApi = useCallback(async () => {
-    if (!useLiveMail || !mailApiBase) return
+    if (!useLiveMail || !mailApiBase) {
+      setTrustedDomainsSyncError(null)
+      return
+    }
     const session = getSession()
     if (!session) return
     try {
@@ -909,18 +935,22 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
         const { domains } = await setTrustedImageDomainsApi(mailApiBase, token, merged)
         setTrustedImageDomains(new Set(domains))
         writeTrustedImageDomainsLocal(domains)
-        return
+      } else {
+        setTrustedImageDomains(new Set(server))
+        writeTrustedImageDomainsLocal(server)
       }
-      setTrustedImageDomains(new Set(server))
-      writeTrustedImageDomainsLocal(server)
-    } catch {
-      /* keep existing local state */
+      setTrustedDomainsSyncError(null)
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e)
+      const hint =
+        /\b404\b|not found/i.test(raw)
+          ? ' Is `/mail/trusted-image-domains` deployed? Run `terraform apply` for the mail API.'
+          : ''
+      setTrustedDomainsSyncError(
+        `Could not load trusted image domains from the server.${hint ? ` ${hint}` : ''} ${raw}`.trim(),
+      )
     }
   }, [useLiveMail, mailApiBase])
-
-  useEffect(() => {
-    void syncTrustedImageDomainsFromApi()
-  }, [syncTrustedImageDomainsFromApi])
 
   useEffect(() => {
     setSelectedId((prev) => {
@@ -1027,6 +1057,7 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     }
     try {
       const token = getBearerTokenForApi(session)
+      await syncTrustedImageDomainsFromApi()
       const folders = await fetchUserFolders(mailApiBase, token)
       setUserFolders(folders)
       const list = await fetchLiveMailbox(mailApiBase, token, folders)
@@ -1055,12 +1086,9 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     } finally {
       if (!silent) {
         setMailLoading(false)
-        if (useLiveMail && mailApiBase && getSession()) {
-          void syncTrustedImageDomainsFromApi()
-        }
       }
     }
-  }, [useLiveMail, mailApiBase, syncTrustedImageDomainsFromApi])
+  }, [useLiveMail, mailApiBase, syncTrustedImageDomainsFromApi, authSessionExpiresAt])
 
   useEffect(() => {
     if (!useLiveMail) return
@@ -1592,6 +1620,15 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
               </button>
             </div>
           ) : null}
+        </div>
+      ) : null}
+      {trustedDomainsSyncError ? (
+        <div
+          className="cm-alert cm-alert--err"
+          role="alert"
+          style={{ margin: '0.5rem 1rem 0', maxWidth: 720 }}
+        >
+          {trustedDomainsSyncError}
         </div>
       ) : null}
       <header className="cm-topbar" role="banner">
@@ -2442,6 +2479,8 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
         trustedDomains={[...trustedImageDomains].sort((a, b) => a.localeCompare(b))}
         onRemoveTrustedDomain={removeTrustedDomain}
         onClearTrustedDomains={clearTrustedDomains}
+        liveMailEnabled={useLiveMail}
+        trustedDomainsSyncError={trustedDomainsSyncError}
       />
     </div>
   )
