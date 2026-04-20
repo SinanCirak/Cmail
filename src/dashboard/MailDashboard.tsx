@@ -82,6 +82,8 @@ const STORAGE_FOLDERS = 'cmail-user-folders'
 const STORAGE_THEME = 'cmail-theme'
 const STORAGE_SPLIT = 'cmail-split-list-width'
 const STORAGE_TRUSTED_IMAGE_DOMAINS = 'cmail-trusted-image-domains'
+/** Message ids (mail row `id`) for which the user chose to load CID/inline images; survives F5 in this tab. */
+const SESSION_SHOW_IMAGES_MSG_IDS = 'cmail-show-images-msg-ids'
 const LIVE_MAIL_POLL_MS = 8000
 
 function readTrustedImageDomains(): Set<string> {
@@ -101,6 +103,29 @@ function writeTrustedImageDomainsLocal(domains: string[]) {
       localStorage.removeItem(STORAGE_TRUSTED_IMAGE_DOMAINS)
     } else {
       localStorage.setItem(STORAGE_TRUSTED_IMAGE_DOMAINS, JSON.stringify([...domains].sort()))
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function readShowImagesMessageIdsSession(): Set<string> {
+  try {
+    const s = sessionStorage.getItem(SESSION_SHOW_IMAGES_MSG_IDS)
+    const a = s ? JSON.parse(s) : []
+    if (!Array.isArray(a)) return new Set()
+    return new Set(a.map((x) => String(x).trim()).filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
+function writeShowImagesMessageIdsSession(ids: Set<string>) {
+  try {
+    if (ids.size === 0) {
+      sessionStorage.removeItem(SESSION_SHOW_IMAGES_MSG_IDS)
+    } else {
+      sessionStorage.setItem(SESSION_SHOW_IMAGES_MSG_IDS, JSON.stringify([...ids]))
     }
   } catch {
     /* ignore */
@@ -725,7 +750,19 @@ export function MailDashboard({
   const [composeError, setComposeError] = useState<string | null>(null)
 
   const [trustedImageDomains, setTrustedImageDomains] = useState(() => readTrustedImageDomains())
-  const [showImagesSessionIds, setShowImagesSessionIds] = useState<Set<string>>(() => new Set())
+  const [showImagesSessionIds, setShowImagesSessionIds] = useState<Set<string>>(() =>
+    readShowImagesMessageIdsSession(),
+  )
+
+  const revealCidImagesForMessageId = useCallback((messageId: string) => {
+    if (!messageId) return
+    setShowImagesSessionIds((prev) => {
+      const n = new Set(prev)
+      n.add(messageId)
+      writeShowImagesMessageIdsSession(n)
+      return n
+    })
+  }, [])
 
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
@@ -837,8 +874,16 @@ export function MailDashboard({
     return false
   }, [selected, showImagesSessionIds, trustedImageDomains])
 
+  const showEmbeddedImagesOnce = useCallback(() => {
+    if (!selected) return
+    revealCidImagesForMessageId(selected.id)
+  }, [selected, revealCidImagesForMessageId])
+
   const trustSenderImagesDomain = useCallback(async () => {
-    const d = selected ? senderMailDomainForImageTrust(selected) : ''
+    const sel = selected
+    if (!sel) return
+    const messageId = sel.id
+    const d = senderMailDomainForImageTrust(sel)
     if (!d) return
     if (useLiveMail && mailApiBase) {
       const session = getSession()
@@ -849,6 +894,7 @@ export function MailDashboard({
         setTrustedImageDomains(new Set(domains))
         writeTrustedImageDomainsLocal(domains)
         setTrustedDomainsSyncError(null)
+        revealCidImagesForMessageId(messageId)
       } catch (e) {
         setMailLoadError(e instanceof Error ? e.message : 'Could not save trusted domain.')
       }
@@ -861,16 +907,8 @@ export function MailDashboard({
       writeTrustedImageDomainsLocal([...n])
       return n
     })
-  }, [selected, useLiveMail, mailApiBase])
-
-  const showEmbeddedImagesOnce = useCallback(() => {
-    if (!selected) return
-    setShowImagesSessionIds((prev) => {
-      const n = new Set(prev)
-      n.add(selected.id)
-      return n
-    })
-  }, [selected])
+    revealCidImagesForMessageId(messageId)
+  }, [selected, useLiveMail, mailApiBase, revealCidImagesForMessageId])
 
   const removeTrustedDomain = useCallback(
     async (domain: string) => {
