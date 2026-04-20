@@ -113,6 +113,33 @@ function emailDomainFromAddress(addr: string): string {
   return addr.slice(i + 1).trim().toLowerCase()
 }
 
+/** Prefer From; fall back To when list rows omit sender email until body loads. */
+function senderMailDomainForImageTrust(m: MailMessage): string {
+  const from = emailDomainFromAddress(m.from.email)
+  if (from) return from
+  for (const c of m.to ?? []) {
+    const d = emailDomainFromAddress(c.email)
+    if (d) return d
+  }
+  return ''
+}
+
+/**
+ * True if `senderDomain` is exactly trusted, or is a subdomain of a trusted root
+ * (e.g. trusted `myworkday.com` matches `mail.myworkday.com`). Roots must contain a dot.
+ */
+function isSenderDomainTrustedForInlineImages(senderDomain: string, trusted: Set<string>): boolean {
+  const d = (senderDomain || '').trim().toLowerCase()
+  if (!d) return false
+  if (trusted.has(d)) return true
+  for (const t of trusted) {
+    const root = (t || '').trim().toLowerCase()
+    if (!root || !root.includes('.')) continue
+    if (d === root || d.endsWith('.' + root)) return true
+  }
+  return false
+}
+
 type SettingsTab = 'account' | 'security' | 'appearance' | 'privacy'
 
 function clamp(n: number, min: number, max: number) {
@@ -785,13 +812,13 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
   const allowInlineImages = useMemo(() => {
     if (!selected?.inlineImages?.length) return true
     if (showImagesSessionIds.has(selected.id)) return true
-    const d = emailDomainFromAddress(selected.from.email)
-    if (d && trustedImageDomains.has(d)) return true
+    const d = senderMailDomainForImageTrust(selected)
+    if (d && isSenderDomainTrustedForInlineImages(d, trustedImageDomains)) return true
     return false
   }, [selected, showImagesSessionIds, trustedImageDomains])
 
   const trustSenderImagesDomain = useCallback(async () => {
-    const d = selected ? emailDomainFromAddress(selected.from.email) : ''
+    const d = selected ? senderMailDomainForImageTrust(selected) : ''
     if (!d) return
     if (useLiveMail && mailApiBase) {
       const session = getSession()
@@ -869,35 +896,31 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     writeTrustedImageDomainsLocal([])
   }, [useLiveMail, mailApiBase])
 
-  useEffect(() => {
+  const syncTrustedImageDomainsFromApi = useCallback(async () => {
     if (!useLiveMail || !mailApiBase) return
     const session = getSession()
     if (!session) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const token = getBearerTokenForApi(session)
-        const server = await fetchTrustedImageDomains(mailApiBase, token)
-        if (cancelled) return
-        const local = [...readTrustedImageDomains()]
-        const merged = [...new Set([...server, ...local])]
-        if (merged.length !== server.length) {
-          const { domains } = await setTrustedImageDomainsApi(mailApiBase, token, merged)
-          if (cancelled) return
-          setTrustedImageDomains(new Set(domains))
-          writeTrustedImageDomainsLocal(domains)
-          return
-        }
-        setTrustedImageDomains(new Set(server))
-        writeTrustedImageDomainsLocal(server)
-      } catch {
-        /* keep existing local state */
+    try {
+      const token = getBearerTokenForApi(session)
+      const server = await fetchTrustedImageDomains(mailApiBase, token)
+      const local = [...readTrustedImageDomains()]
+      const merged = [...new Set([...server, ...local])]
+      if (merged.length !== server.length) {
+        const { domains } = await setTrustedImageDomainsApi(mailApiBase, token, merged)
+        setTrustedImageDomains(new Set(domains))
+        writeTrustedImageDomainsLocal(domains)
+        return
       }
-    })()
-    return () => {
-      cancelled = true
+      setTrustedImageDomains(new Set(server))
+      writeTrustedImageDomainsLocal(server)
+    } catch {
+      /* keep existing local state */
     }
   }, [useLiveMail, mailApiBase])
+
+  useEffect(() => {
+    void syncTrustedImageDomainsFromApi()
+  }, [syncTrustedImageDomainsFromApi])
 
   useEffect(() => {
     setSelectedId((prev) => {
@@ -1032,9 +1055,12 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
     } finally {
       if (!silent) {
         setMailLoading(false)
+        if (useLiveMail && mailApiBase && getSession()) {
+          void syncTrustedImageDomainsFromApi()
+        }
       }
     }
-  }, [useLiveMail, mailApiBase])
+  }, [useLiveMail, mailApiBase, syncTrustedImageDomainsFromApi])
 
   useEffect(() => {
     if (!useLiveMail) return
@@ -2185,13 +2211,13 @@ export function MailDashboard({ onLogout }: { onLogout?: () => void }) {
                         >
                           Show images
                         </button>
-                        {emailDomainFromAddress(selected.from.email) ? (
+                        {senderMailDomainForImageTrust(selected) ? (
                           <button
                             type="button"
                             className="cm-btn cm-btn--ghost cm-btn--sm"
                             onClick={() => void trustSenderImagesDomain()}
                           >
-                            Always show from @{emailDomainFromAddress(selected.from.email)}
+                            Always show from @{senderMailDomainForImageTrust(selected)}
                           </button>
                         ) : null}
                       </div>
