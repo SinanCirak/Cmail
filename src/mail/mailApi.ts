@@ -213,6 +213,8 @@ export type MailContentPayload = {
   isHtml: boolean
   attachments?: { name: string; contentType?: string; contentBase64?: string; size?: number }[]
   inlineImages?: { cid: string; contentType: string; contentBase64: string }[]
+  /** Present on live `/mail/content`: DB-backed domains allowed to auto-load CID images. */
+  trustedImageDomains?: string[]
   from?: MailContact | null
   to?: MailContact[]
   cc?: MailContact[]

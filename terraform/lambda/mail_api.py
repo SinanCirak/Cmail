@@ -448,6 +448,8 @@ def get_content(user_email: str, s3_key: str) -> dict:
 
     from_c = _contact_one(msg, "From")
     inline_images = _extract_inline_images(msg)
+    pk = _pk(user_email)
+    trusted_image_domains = _read_trusted_image_domains_list(pk)
     return _response(
         200,
         {
@@ -459,6 +461,9 @@ def get_content(user_email: str, s3_key: str) -> dict:
             "to": _to_display_contacts(msg),
             "cc": _contact_list(msg, "Cc"),
             "bcc": _contact_list(msg, "Bcc"),
+            # Same-tab race fix: client applies this with the message body so DB-trusted
+            # domains take effect before rendering CID images.
+            "trustedImageDomains": trusted_image_domains,
         },
     )
 

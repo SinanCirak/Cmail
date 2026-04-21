@@ -176,14 +176,21 @@ function emailDomainFromAddress(addr: string): string {
   return addr.slice(i + 1).trim().toLowerCase()
 }
 
-/** Prefer From; fall back To when list rows omit sender email until body loads. */
+/** Pull an email-like token from free text (e.g. list rows that only put address in the name field). */
+function emailFromLooseText(s: string): string {
+  const m = (s || '').match(/[\w.%+-]+@[\w.-]+\.[A-Za-z]{2,}/)
+  return m ? m[0].trim().toLowerCase() : ''
+}
+
+/**
+ * Domain used for “trust sender for CID images”.
+ * Do not fall back to To/Cc (often the mailbox owner); that breaks inbound Workday-style mail until From is parsed.
+ */
 function senderMailDomainForImageTrust(m: MailMessage): string {
-  const from = emailDomainFromAddress(m.from.email)
-  if (from) return from
-  for (const c of m.to ?? []) {
-    const d = emailDomainFromAddress(c.email)
-    if (d) return d
-  }
+  const fromAddr = emailDomainFromAddress(m.from.email)
+  if (fromAddr) return fromAddr
+  const fromLoose = emailFromLooseText(m.from.name || '')
+  if (fromLoose) return emailDomainFromAddress(fromLoose)
   return ''
 }
 
@@ -1222,6 +1229,14 @@ export function MailDashboard({
         const payload = await fetchMailBody(mailApiBase, getBearerTokenForApi(session), key)
         if (cancelled) return
         fetchedBodyIds.current.add(id)
+        if (payload.trustedImageDomains !== undefined && Array.isArray(payload.trustedImageDomains)) {
+          const fromApi = payload.trustedImageDomains
+            .map((x) => String(x).trim().toLowerCase())
+            .filter(Boolean)
+          setTrustedImageDomains(new Set(fromApi))
+          writeTrustedImageDomainsLocal(fromApi)
+          setTrustedDomainsSyncError(null)
+        }
         const atts = payload.attachments?.map((a) => ({
           name: a.name,
           size: a.size,
