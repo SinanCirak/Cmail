@@ -919,31 +919,23 @@ export function MailDashboard({
     return false
   }, [selected, showImagesSessionIds, trustedImageDomains])
 
-  const showEmbeddedImagesOnce = useCallback(() => {
-    if (!selected) return
-    revealCidImagesForMessageId(selected.id)
-  }, [selected, revealCidImagesForMessageId])
-
-  const trustSenderImagesDomain = useCallback(async () => {
-    const sel = selected
-    if (!sel) return
-    const messageId = sel.id
+  const trustSelectedSenderDomain = useCallback(async (sel: MailMessage) => {
     const d = senderMailDomainForImageTrust(sel)
-    if (!d) return
+    if (!d) return false
     if (useLiveMail && mailApiBase) {
       const session = getSession()
-      if (!session) return
+      if (!session) return false
       try {
         const token = getBearerTokenForApi(session)
         const { domains } = await addTrustedImageDomainApi(mailApiBase, token, d)
         setTrustedImageDomains(new Set(domains))
         writeTrustedImageDomainsLocal(domains)
         setTrustedDomainsSyncError(null)
-        revealCidImagesForMessageId(messageId)
       } catch (e) {
         setMailLoadError(e instanceof Error ? e.message : 'Could not save trusted domain.')
+        return false
       }
-      return
+      return true
     }
     setTrustedImageDomains((prev) => {
       if (prev.has(d)) return prev
@@ -952,8 +944,23 @@ export function MailDashboard({
       writeTrustedImageDomainsLocal([...n])
       return n
     })
+    return true
+  }, [useLiveMail, mailApiBase])
+
+  const showEmbeddedImagesOnce = useCallback(async () => {
+    if (!selected) return
+    revealCidImagesForMessageId(selected.id)
+    // "Show images" also records sender domain trust so we do not ask repeatedly.
+    await trustSelectedSenderDomain(selected)
+  }, [selected, revealCidImagesForMessageId, trustSelectedSenderDomain])
+
+  const trustSenderImagesDomain = useCallback(async () => {
+    const sel = selected
+    if (!sel) return
+    const messageId = sel.id
+    await trustSelectedSenderDomain(sel)
     revealCidImagesForMessageId(messageId)
-  }, [selected, useLiveMail, mailApiBase, revealCidImagesForMessageId])
+  }, [selected, revealCidImagesForMessageId, trustSelectedSenderDomain])
 
   const removeTrustedDomain = useCallback(
     async (domain: string) => {
