@@ -926,6 +926,11 @@
   flex-shrink: 0;
 }
 
+.cm-read__images-banner__actions .cm-btn {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
 .cm-read__body-zone {
   flex: 1;
   min-height: 0;
@@ -1767,6 +1772,12 @@
   .cm-row__star {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  .cm-read__images-banner__actions .cm-btn {
+    min-height: 48px;
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
   }
 }
 

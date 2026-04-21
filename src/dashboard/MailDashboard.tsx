@@ -82,9 +82,13 @@ const STORAGE_FOLDERS = 'cmail-user-folders'
 const STORAGE_THEME = 'cmail-theme'
 const STORAGE_SPLIT = 'cmail-split-list-width'
 const STORAGE_TRUSTED_IMAGE_DOMAINS = 'cmail-trusted-image-domains'
-/** Message ids (mail row `id`) for which the user chose to load CID/inline images; survives F5 in this tab. */
-const SESSION_SHOW_IMAGES_MSG_IDS = 'cmail-show-images-msg-ids'
+/**
+ * Message ids (mail row `id`) for which the user chose to load CID/inline images.
+ * Stored in localStorage so mobile browsers / tab lifecycle do not drop it as often as sessionStorage.
+ */
+const STORAGE_SHOW_IMAGES_MSG_IDS = 'cmail-show-images-msg-ids'
 const LIVE_MAIL_POLL_MS = 8000
+const MAX_STORED_SHOW_IMAGES_MSG_IDS = 500
 
 function readTrustedImageDomains(): Set<string> {
   try {
@@ -109,27 +113,61 @@ function writeTrustedImageDomainsLocal(domains: string[]) {
   }
 }
 
-function readShowImagesMessageIdsSession(): Set<string> {
+function writeShowImagesMessageIdsStorage(ids: Set<string>) {
   try {
-    const s = sessionStorage.getItem(SESSION_SHOW_IMAGES_MSG_IDS)
-    const a = s ? JSON.parse(s) : []
-    if (!Array.isArray(a)) return new Set()
-    return new Set(a.map((x) => String(x).trim()).filter(Boolean))
-  } catch {
-    return new Set()
-  }
-}
-
-function writeShowImagesMessageIdsSession(ids: Set<string>) {
-  try {
-    if (ids.size === 0) {
-      sessionStorage.removeItem(SESSION_SHOW_IMAGES_MSG_IDS)
+    const arr = [...ids]
+    const capped =
+      arr.length > MAX_STORED_SHOW_IMAGES_MSG_IDS ? arr.slice(-MAX_STORED_SHOW_IMAGES_MSG_IDS) : arr
+    if (capped.length === 0) {
+      localStorage.removeItem(STORAGE_SHOW_IMAGES_MSG_IDS)
     } else {
-      sessionStorage.setItem(SESSION_SHOW_IMAGES_MSG_IDS, JSON.stringify([...ids]))
+      localStorage.setItem(STORAGE_SHOW_IMAGES_MSG_IDS, JSON.stringify(capped))
     }
   } catch {
     /* ignore */
   }
+  try {
+    sessionStorage.removeItem(STORAGE_SHOW_IMAGES_MSG_IDS)
+  } catch {
+    /* ignore */
+  }
+}
+
+function readShowImagesMessageIdsStorage(): Set<string> {
+  const out = new Set<string>()
+  try {
+    const ls = localStorage.getItem(STORAGE_SHOW_IMAGES_MSG_IDS)
+    if (ls) {
+      const a = JSON.parse(ls) as unknown
+      if (Array.isArray(a)) {
+        for (const x of a) {
+          const s = String(x).trim()
+          if (s) out.add(s)
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const legacy = sessionStorage.getItem(STORAGE_SHOW_IMAGES_MSG_IDS)
+    if (legacy) {
+      const a = JSON.parse(legacy) as unknown
+      if (Array.isArray(a)) {
+        for (const x of a) {
+          const s = String(x).trim()
+          if (s) out.add(s)
+        }
+      }
+      sessionStorage.removeItem(STORAGE_SHOW_IMAGES_MSG_IDS)
+      if (out.size > 0) {
+        writeShowImagesMessageIdsStorage(out)
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return out
 }
 
 function emailDomainFromAddress(addr: string): string {
@@ -751,7 +789,7 @@ export function MailDashboard({
 
   const [trustedImageDomains, setTrustedImageDomains] = useState(() => readTrustedImageDomains())
   const [showImagesSessionIds, setShowImagesSessionIds] = useState<Set<string>>(() =>
-    readShowImagesMessageIdsSession(),
+    readShowImagesMessageIdsStorage(),
   )
 
   const revealCidImagesForMessageId = useCallback((messageId: string) => {
@@ -759,7 +797,7 @@ export function MailDashboard({
     setShowImagesSessionIds((prev) => {
       const n = new Set(prev)
       n.add(messageId)
-      writeShowImagesMessageIdsSession(n)
+      writeShowImagesMessageIdsStorage(n)
       return n
     })
   }, [])
