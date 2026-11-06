@@ -20,6 +20,7 @@ import {
 import { mockEmails } from '../data/mockEmails'
 import {
   addTrustedImageDomainApi,
+  applyFolderSenderRule,
   createUserFolderApi,
   deleteMailMessage,
   deleteUserFolderApi,
@@ -812,6 +813,14 @@ export function MailDashboard({
 
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [newFolderSenders, setNewFolderSenders] = useState('')
+  const [newFolderApplyExisting, setNewFolderApplyExisting] = useState(false)
+  const [newFolderBusy, setNewFolderBusy] = useState(false)
+  const newFolderRunning = useRef(false)
+  const [newFolderError, setNewFolderError] = useState<string | null>(null)
+  const [newFolderProgress, setNewFolderProgress] = useState<string | null>(null)
+  const newFolderRequestId = useRef<string | null>(null)
+  const newFolderJob = useRef<{ folder: UserFolder; cursor: string | null; moved: number } | null>(null)
 
   useEffect(() => {
     try {
@@ -1628,30 +1637,68 @@ export function MailDashboard({
   }, [userFolders])
 
   const createFolderQuick = useCallback(async () => {
+    if (newFolderRunning.current) return
     const name = newFolderName.trim()
+    const senders = [...new Set(newFolderSenders.split(/[\s,;]+/).filter(Boolean).map((s) => s.toLowerCase()))]
     if (!name) return
-    if (useLiveMail && mailApiBase) {
-      const session = getSession()
-      if (!session) return
-      try {
-        const created = await createUserFolderApi(mailApiBase, getBearerTokenForApi(session), name)
-        setNewFolderName('')
-        setNewFolderOpen(false)
-        setSidebarOpen(false)
-        await loadLiveMailbox()
-        setFolder(customFolderKey(created.id))
-      } catch (e) {
-        setMailLoadError(e instanceof Error ? e.message : 'Could not create folder')
-      }
+    if (senders.length > 20 || senders.some((s) => !/^[^\s@<>*]+@[^\s@<>*]+\.[^\s@<>*]+$/.test(s))) {
+      setNewFolderError('Enter up to 20 complete email addresses, separated by commas or new lines.')
       return
     }
-    const id = crypto.randomUUID()
-    setUserFolders((prev) => [...prev, { id, name }])
-    setFolder(customFolderKey(id))
-    setNewFolderName('')
-    setNewFolderOpen(false)
-    setSidebarOpen(false)
-  }, [newFolderName, useLiveMail, mailApiBase, loadLiveMailbox])
+    if (newFolderApplyExisting && !senders.length) {
+      setNewFolderError('Add a sender address to apply this rule to existing Inbox messages.')
+      return
+    }
+    newFolderRunning.current = true
+    setNewFolderBusy(true)
+    setNewFolderError(null)
+    try {
+      let created: UserFolder
+      if (useLiveMail && mailApiBase) {
+        const session = getSession()
+        if (!session) throw new Error('Please sign in again.')
+        const token = getBearerTokenForApi(session)
+        newFolderRequestId.current ??= crypto.randomUUID()
+        created = newFolderJob.current?.folder ?? await createUserFolderApi(mailApiBase, token, name, senders, newFolderRequestId.current)
+        newFolderJob.current ??= { folder: created, cursor: null, moved: 0 }
+        setUserFolders((prev) => prev.some((f) => f.id === created.id) ? prev : [...prev, created])
+        if (newFolderApplyExisting) {
+          const job = newFolderJob.current
+          let complete = false
+          while (!complete) {
+            setNewFolderProgress(`Checking Inbox… ${job.moved} moved`)
+            const batch = await applyFolderSenderRule(mailApiBase, token, created.id, job.cursor)
+            job.moved += batch.moved
+            job.cursor = batch.nextCursor
+            setNewFolderProgress(`Checking Inbox… ${job.moved} moved`)
+            if (batch.error) throw new Error(batch.error)
+            complete = batch.complete
+          }
+        }
+      } else {
+        created = { id: crypto.randomUUID(), name, senders }
+        setUserFolders((prev) => [...prev, created])
+        if (newFolderApplyExisting) {
+          setEmails((prev) => prev.map((m) => m.folder === 'inbox' && senders.includes(m.from.email.toLowerCase())
+            ? { ...m, folder: customFolderKey(created.id) } : m))
+        }
+      }
+      setFolder(customFolderKey(created.id))
+      setNewFolderName('')
+      setNewFolderSenders('')
+      setNewFolderApplyExisting(false)
+      setNewFolderOpen(false)
+      setSidebarOpen(false)
+      setNewFolderProgress(null)
+      newFolderJob.current = null
+      newFolderRequestId.current = null
+    } catch (e) {
+      setNewFolderError(e instanceof Error ? e.message : 'Could not create folder')
+    } finally {
+      newFolderRunning.current = false
+      setNewFolderBusy(false)
+    }
+  }, [newFolderName, newFolderSenders, newFolderApplyExisting, useLiveMail, mailApiBase])
 
   const deleteUserFolder = useCallback(
     async (uf: UserFolder) => {
@@ -1987,7 +2034,11 @@ export function MailDashboard({
                 <button
                   type="button"
                   className="cm-user-folders__add"
-                  onClick={() => setNewFolderOpen((v) => !v)}
+                  disabled={newFolderBusy}
+                  onClick={() => {
+                    setNewFolderOpen((v) => !v)
+                    if (!newFolderJob.current) { newFolderRequestId.current = null; setNewFolderError(null) }
+                  }}
                   aria-expanded={newFolderOpen}
                   title="New folder"
                 >
@@ -1999,23 +2050,41 @@ export function MailDashboard({
                   <input
                     className="cm-new-folder__input"
                     placeholder="Folder name"
+                    aria-label="Folder name"
+                    disabled={newFolderBusy || !!newFolderJob.current}
+                    maxLength={500}
                     value={newFolderName}
                     onChange={(e) => setNewFolderName(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') void createFolderQuick()
-                      if (e.key === 'Escape') {
+                      if (e.key === 'Escape' && !newFolderBusy) {
                         setNewFolderOpen(false)
-                        setNewFolderName('')
+                        if (!newFolderJob.current) setNewFolderName('')
                       }
                     }}
                     autoFocus
                   />
+                  <label className="cm-new-folder__label" htmlFor="folder-senders">Automatically move mail from</label>
+                  <textarea id="folder-senders" className="cm-new-folder__input cm-new-folder__senders"
+                    placeholder="jobs@linkedin.com" value={newFolderSenders}
+                    disabled={newFolderBusy || !!newFolderJob.current}
+                    onChange={(e) => setNewFolderSenders(e.target.value)} rows={2} maxLength={5200} />
+                  <small className="cm-new-folder__hint">Optional. Exact email addresses, separated by commas or new lines.</small>
+                  <label className="cm-new-folder__check">
+                    <input type="checkbox" checked={newFolderApplyExisting}
+                      disabled={newFolderBusy || !!newFolderJob.current}
+                      onChange={(e) => setNewFolderApplyExisting(e.target.checked)} />
+                    Also move matching messages already in Inbox
+                  </label>
+                  {newFolderProgress ? <p role="status" className="cm-new-folder__hint">{newFolderProgress}</p> : null}
+                  {newFolderError ? <p role="alert" className="cm-new-folder__error">{newFolderError}</p> : null}
                   <button
                     type="button"
                     className="cm-btn cm-btn--primary cm-btn--sm"
+                    disabled={newFolderBusy || !newFolderName.trim()}
                     onClick={() => void createFolderQuick()}
                   >
-                    Add
+                    {newFolderBusy ? 'Saving…' : newFolderJob.current ? 'Retry moving messages' : 'Create folder'}
                   </button>
                 </div>
               ) : null}
@@ -2042,6 +2111,7 @@ export function MailDashboard({
                         className="cm-nav__delete"
                         aria-label={`Delete folder ${uf.name}`}
                         title="Delete folder"
+                        disabled={newFolderBusy && newFolderJob.current?.folder.id === uf.id}
                         onClick={() => deleteUserFolder(uf)}
                       >
                         ×

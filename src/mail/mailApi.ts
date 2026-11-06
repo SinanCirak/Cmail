@@ -1,5 +1,5 @@
 import { authenticatedFetch } from '../auth/cognito'
-import type { MailFolder, MailContact, MailMessage, InlineImagePart } from '../types/mail'
+import type { MailFolder, MailContact, MailMessage, InlineImagePart, UserFolder } from '../types/mail'
 
 const noCache: RequestInit = { cache: 'no-store' }
 
@@ -78,13 +78,13 @@ export async function fetchMailboxPage(
   return { ...data, messages: data.messages.map(toMailMessage) }
 }
 
-export async function fetchUserFolders(apiBase: string, token: string): Promise<{ id: string; name: string }[]> {
+export async function fetchUserFolders(apiBase: string, token: string): Promise<UserFolder[]> {
   const res = await authenticatedFetch(`${apiBase}/mail/user-folders`, {
     ...noCache,
     headers: { Authorization: `Bearer ${token}` },
   })
   await failIfNotOk(res)
-  const data = (await res.json()) as { folders: { id: string; name: string }[] }
+  const data = (await res.json()) as { folders: UserFolder[] }
   return data.folders ?? []
 }
 
@@ -92,7 +92,9 @@ export async function createUserFolderApi(
   apiBase: string,
   token: string,
   name: string,
-): Promise<{ id: string; name: string }> {
+  senders: string[] = [],
+  requestId?: string,
+): Promise<UserFolder> {
   const res = await authenticatedFetch(`${apiBase}/mail/user-folders`, {
     ...noCache,
     method: 'POST',
@@ -100,10 +102,21 @@ export async function createUserFolderApi(
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, senders, requestId }),
   })
   await failIfNotOk(res)
-  return (await res.json()) as { id: string; name: string }
+  return (await res.json()) as UserFolder
+}
+
+export async function applyFolderSenderRule(
+  apiBase: string, token: string, folderId: string, cursor: string | null,
+): Promise<{ moved: number; nextCursor: string | null; complete: boolean; error?: string }> {
+  const res = await authenticatedFetch(`${apiBase}/mail/user-folders`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'applySenderRule', folderId, cursor }),
+  })
+  await failIfNotOk(res)
+  return res.json()
 }
 
 export async function deleteUserFolderApi(apiBase: string, token: string, folderId: string): Promise<void> {

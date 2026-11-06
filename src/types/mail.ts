@@ -10,6 +10,7 @@ export type NavFolder = MailFolder | 'starred'
 export interface UserFolder {
   id: string
   name: string
+  senders?: string[]
 }
 
 export interface MailContact {
@@ -59,5 +60,5 @@ export interface MailMessage {
 }
 
 export function customFolderKey(userFolderId: string): `custom:${string}` {
-  return `custom:${userFolderId}`
+  return `custom:${userFolderId.replace(/-/g, '').toLowerCase()}`
 }

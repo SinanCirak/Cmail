@@ -198,3 +198,11 @@
   outline: none;
   box-shadow: none;
 }
+
+.cm-new-folder { display: flex; flex-direction: column; gap: .65rem; }
+.cm-new-folder__label { font-size: .8rem; font-weight: 600; color: #e2e8f0; }
+.cm-new-folder__senders { min-height: 68px; width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: .82rem; }
+.cm-new-folder__hint { margin: 0; color: #aab9ca; font-size: .75rem; line-height: 1.5; }
+.cm-new-folder__check { display: flex; align-items: flex-start; gap: .5rem; font-size: .78rem; line-height: 1.5; color: #e2e8f0; }
+.cm-new-folder__check input { margin-top: .2rem; flex-shrink: 0; accent-color: var(--cm-accent); }
+.cm-new-folder__error { margin: 0; font-size: .8rem; color: #fda4af; overflow-wrap: anywhere; }
