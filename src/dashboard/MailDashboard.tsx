@@ -763,6 +763,7 @@ export function MailDashboard({
   const [pdfBusy, setPdfBusy] = useState(false)
   const [starPendingIds, setStarPendingIds] = useState<Set<string>>(() => new Set())
   const starPending = useRef(new Map<string, boolean>())
+  const starOverrides = useRef(new Map<string, MailMessage>())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const sessionInvalid = mailLoadError?.includes('Session expired or invalid') ?? false
 
@@ -1120,6 +1121,7 @@ export function MailDashboard({
     const starred = !msg.starred
     const session = getSession()
     if (useLiveMail && !session) return
+    starOverrides.current.set(id, { ...msg, starred })
     starPending.current.set(id, starred)
     setStarPendingIds(new Set(starPending.current.keys()))
     setEmails((prev) => prev.map((m) => m.id === id ? { ...m, starred } : m))
@@ -1129,6 +1131,7 @@ export function MailDashboard({
         await reloadMailboxRef.current?.()
       }
     } catch (error) {
+      starOverrides.current.delete(id)
       setEmails((prev) => prev.map((m) => m.id === id ? { ...m, starred: msg.starred } : m))
       setMailLoadError(error instanceof Error ? error.message : 'Could not update star')
     } finally {
@@ -1216,8 +1219,33 @@ export function MailDashboard({
         return
       }
       setUserFolders(folders)
-      setPageData(data)
-      const list = data.messages
+      const effectiveFolder = debouncedSearch && searchScope === 'all' ? 'all' : folder
+      // A successful write can reach this view before the stream updates its index.
+      // Keep the user's choice until an unfiltered Starred response confirms it.
+      if (effectiveFolder === 'starred' && !debouncedSearch && !showUnreadOnly && !cursor) {
+        for (const [id, choice] of starOverrides.current) {
+          const indexed = data.messages.find((m) => m.id === id)
+          if (!starPending.current.has(id) && (choice.starred ? indexed?.starred === true : !indexed)) {
+            starOverrides.current.delete(id)
+          }
+        }
+      }
+      let list = data.messages.map((m) => ({ ...m, starred: starOverrides.current.get(m.id)?.starred ?? m.starred }))
+      if (effectiveFolder === 'starred') {
+        list = list.filter((m) => m.starred)
+        if (!cursor && !debouncedSearch) {
+          for (const choice of starOverrides.current.values()) {
+            if (choice.starred && choice.folder !== 'spam' && choice.folder !== 'trash'
+              && (!showUnreadOnly || !choice.read) && !list.some((m) => m.id === choice.id)) {
+              list.push(choice)
+            }
+          }
+          list.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())
+          list = list.slice(0, 25)
+        }
+      }
+      setPageData({ ...data, total: Math.max(data.total, list.length),
+        start: list.length ? data.start || 1 : 0, end: list.length ? (data.start || 1) + list.length - 1 : 0 })
       setEmails((prev) => {
         const prevById = new Map(prev.map((m) => [m.id, m]))
         return list.map((m) => {
