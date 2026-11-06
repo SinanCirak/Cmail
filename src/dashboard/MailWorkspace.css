@@ -206,3 +206,14 @@
 .cm-new-folder__check { display: flex; align-items: flex-start; gap: .5rem; font-size: .78rem; line-height: 1.5; color: #e2e8f0; }
 .cm-new-folder__check input { margin-top: .2rem; flex-shrink: 0; accent-color: var(--cm-accent); }
 .cm-new-folder__error { margin: 0; font-size: .8rem; color: #fda4af; overflow-wrap: anywhere; }
+
+.cm-folder-rules__editor { margin-top: 1rem; }
+.cm-folder-rules__addresses { width: 100%; min-height: 120px; box-sizing: border-box; resize: vertical; line-height: 1.5; }
+.cm-folder-rules__deletion { margin-top: 1rem; }
+.cm-folder-rules__editor .cm-settings__actions { flex-wrap: wrap; }
+
+.cm-nav__counts { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; gap: .4rem; flex-shrink: 0; }
+.cm-nav__unread { padding: .15rem .35rem; border-radius: 5px; color: #dbeafe; background: #234b81; font-size: .65rem; font-weight: 700; white-space: nowrap; }
+.cm-nav__counts .cm-nav__count { font-size: .72rem; font-variant-numeric: tabular-nums; }
+.cm-mailbox-head__counts { display: flex; align-items: center; justify-content: flex-end; gap: .5rem; flex-wrap: wrap; }
+.cm-mailbox-head__unread { color: var(--cm-accent); background: var(--cm-accent-soft); padding: .25rem .5rem; border-radius: 6px; font-size: .75rem; white-space: nowrap; }

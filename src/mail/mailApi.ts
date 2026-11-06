@@ -60,6 +60,7 @@ export type MailboxPage = {
   start: number
   end: number
   counts: Record<string, number>
+  unreadCounts?: Record<string, number>
   unreadInbox: number
 }
 
@@ -106,6 +107,17 @@ export async function createUserFolderApi(
   })
   await failIfNotOk(res)
   return (await res.json()) as UserFolder
+}
+
+export async function updateFolderSenders(
+  apiBase: string, token: string, folderId: string, senders: string[],
+): Promise<UserFolder> {
+  const res = await authenticatedFetch(`${apiBase}/mail/user-folders`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'updateSenderRule', folderId, senders }),
+  })
+  await failIfNotOk(res)
+  return res.json()
 }
 
 export async function applyFolderSenderRule(

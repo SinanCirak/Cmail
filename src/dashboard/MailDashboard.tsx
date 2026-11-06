@@ -21,6 +21,7 @@ import { mockEmails } from '../data/mockEmails'
 import {
   addTrustedImageDomainApi,
   applyFolderSenderRule,
+  updateFolderSenders,
   createUserFolderApi,
   deleteMailMessage,
   deleteUserFolderApi,
@@ -42,6 +43,7 @@ import {
 import type { MailFolder, MailMessage, NavFolder, UserFolder } from '../types/mail'
 import { customFolderKey } from '../types/mail'
 import { EmailHtmlIframe } from './EmailHtmlIframe'
+import { FolderRulesSettings } from './FolderRulesSettings'
 
 const ComposeRichEditor = lazy(() =>
   import('./ComposeRichEditor').then((m) => ({ default: m.ComposeRichEditor })),
@@ -220,7 +222,7 @@ function isSenderDomainTrustedForInlineImages(senderDomain: string, trusted: Set
   return false
 }
 
-type SettingsTab = 'account' | 'security' | 'appearance' | 'privacy'
+type SettingsTab = 'account' | 'security' | 'appearance' | 'privacy' | 'folders'
 
 function SettingsModal(props: {
   open: boolean
@@ -235,6 +237,8 @@ function SettingsModal(props: {
   onClearTrustedDomains: () => void | Promise<void>
   liveMailEnabled: boolean
   trustedDomainsSyncError: string | null
+  userFolders: UserFolder[]
+  onSaveFolderSenders: (id: string, senders: string[]) => Promise<UserFolder>
 }) {
   const {
     open,
@@ -249,6 +253,8 @@ function SettingsModal(props: {
     onClearTrustedDomains,
     liveMailEnabled,
     trustedDomainsSyncError,
+    userFolders,
+    onSaveFolderSenders,
   } = props
   const [tab, setTab] = useState<SettingsTab>('account')
   const [displayName, setDisplayName] = useState('')
@@ -365,7 +371,7 @@ function SettingsModal(props: {
         <div className="cm-modal__head">
           <div className="cm-modal__title-wrap">
             <h2 className="cm-modal__title">Settings</h2>
-            <p className="cm-modal__subtitle">Account, password, privacy, and display</p>
+            <p className="cm-modal__subtitle">Account, folders, password, privacy, and display</p>
           </div>
           <button type="button" className="cm-icon-btn" aria-label="Close settings" onClick={onClose}>
             <IconClose className="cm-icon" />
@@ -410,7 +416,13 @@ function SettingsModal(props: {
             >
               Privacy
             </button>
+            <button type="button" className={`cm-tab ${tab === 'folders' ? 'cm-tab--active' : ''}`}
+              role="tab" aria-selected={tab === 'folders'} onClick={() => setTab('folders')}>
+              Folders
+            </button>
           </div>
+
+          {tab === 'folders' ? <FolderRulesSettings folders={userFolders} onSave={onSaveFolderSenders} /> : null}
 
           {tab === 'account' ? (
             <div className="cm-settings">
@@ -894,6 +906,19 @@ export function MailDashboard({
     }
     return c
   }, [emails, useLiveMail, pageData, starCountOverride])
+
+  const unreadCounts = useMemo<Record<string, number>>(() => {
+    if (useLiveMail) return { inbox: pageData?.unreadInbox ?? 0, ...pageData?.unreadCounts }
+    const result: Record<string, number> = {}
+    for (const message of emails) {
+      if (message.read) continue
+      result[message.folder] = (result[message.folder] ?? 0) + 1
+      if (message.starred && message.folder !== 'spam' && message.folder !== 'trash') {
+        result.starred = (result.starred ?? 0) + 1
+      }
+    }
+    return result
+  }, [useLiveMail, pageData, emails])
 
   type ListMailRow = MailMessage & { threadCount?: number; threadIds?: string[] }
   const filteredDemoEmails = useMemo(() => {
@@ -1433,7 +1458,7 @@ export function MailDashboard({
 
   useEffect(() => {
     if (unreadInInbox > 0) {
-      document.title = `New (${unreadInInbox}) - Cmail`
+      document.title = `(${unreadInInbox} unread) - Cmail`
       return
     }
     document.title = 'Cmail'
@@ -1699,6 +1724,24 @@ export function MailDashboard({
       setNewFolderBusy(false)
     }
   }, [newFolderName, newFolderSenders, newFolderApplyExisting, useLiveMail, mailApiBase])
+
+  const saveFolderSenders = useCallback(async (id: string, senders: string[]): Promise<UserFolder> => {
+    const existing = userFolders.find((folder) => folder.id === id)
+    if (!existing) throw new Error('Folder not found. Refresh and retry.')
+    let updated: UserFolder
+    if (useLiveMail && mailApiBase) {
+      const session = getSession()
+      if (!session) throw new Error('Please sign in again.')
+      updated = await updateFolderSenders(mailApiBase, getBearerTokenForApi(session), id, senders)
+    } else {
+      if (userFolders.some((folder) => folder.id !== id && folder.senders?.some((address) => senders.includes(address)))) {
+        throw new Error('A sender is already linked to another folder.')
+      }
+      updated = { ...existing, senders }
+    }
+    setUserFolders((prev) => prev.map((folder) => folder.id === id ? updated : folder))
+    return updated
+  }, [userFolders, useLiveMail, mailApiBase])
 
   const deleteUserFolder = useCallback(
     async (uf: UserFolder) => {
@@ -2006,8 +2049,7 @@ export function MailDashboard({
             <nav className="cm-nav" aria-label="System folders">
               {SYSTEM_NAV.map(({ id, label, icon: Icon }) => {
                 const total = id === 'starred' ? counts.starred ?? 0 : counts[id] ?? 0
-                const displayCount =
-                  id === 'inbox' && unreadInInbox > 0 ? unreadInInbox : total
+                const unread = unreadCounts[id] ?? 0
                 return (
                   <button
                     key={id}
@@ -2020,8 +2062,9 @@ export function MailDashboard({
                   >
                     <Icon className="cm-nav__icon" />
                     <span className="cm-nav__label">{label}</span>
-                    <span className="cm-nav__count" aria-label={`${displayCount} messages`}>
-                      {displayCount > 0 ? displayCount : ''}
+                    <span className="cm-nav__counts">
+                      {unread > 0 ? <span className="cm-nav__unread" aria-label={`${unread} unread messages`}>{unread.toLocaleString()} unread</span> : null}
+                      <span className="cm-nav__count" title="Total messages" aria-label={`${total} total messages`}>{total.toLocaleString()}</span>
                     </span>
                   </button>
                 )
@@ -2104,7 +2147,10 @@ export function MailDashboard({
                       >
                         <IconFolder className="cm-nav__icon" />
                         <span className="cm-nav__label">{uf.name}</span>
-                        <span className="cm-nav__count">{cnt > 0 ? cnt : ''}</span>
+                        <span className="cm-nav__counts">
+                          {(unreadCounts[fid] ?? 0) > 0 ? <span className="cm-nav__unread" aria-label={`${unreadCounts[fid]} unread messages`}>{unreadCounts[fid].toLocaleString()} unread</span> : null}
+                          <span className="cm-nav__count" title="Total messages" aria-label={`${cnt} total messages`}>{cnt.toLocaleString()}</span>
+                        </span>
                       </button>
                       <button
                         type="button"
@@ -2147,7 +2193,10 @@ export function MailDashboard({
               <div><h1>{debouncedSearch ? 'Search results' : SYSTEM_NAV.find((item) => item.id === folder)?.label ?? userFolders.find((item) => customFolderKey(item.id) === folder)?.name ?? 'Mail'}</h1>
                 {debouncedSearch ? <p>Results for “{debouncedSearch}”</p> : null}
               </div>
-              <span className="cm-mailbox-head__count">{totalMessages.toLocaleString()} {debouncedSearch ? 'results' : 'messages'}</span>
+              <span className="cm-mailbox-head__counts">
+                <span className="cm-mailbox-head__count">{totalMessages.toLocaleString()} {debouncedSearch ? 'results' : 'messages'}</span>
+                {!debouncedSearch ? <span className="cm-mailbox-head__unread">{(unreadCounts[folder] ?? 0).toLocaleString()} unread</span> : null}
+              </span>
             </div>
             <div className="cm-toolbar">
               <label className="cm-toolbar__check">
@@ -2786,6 +2835,8 @@ export function MailDashboard({
         onClearTrustedDomains={clearTrustedDomains}
         liveMailEnabled={useLiveMail}
         trustedDomainsSyncError={trustedDomainsSyncError}
+        userFolders={userFolders}
+        onSaveFolderSenders={saveFolderSenders}
       />
     </div>
   )
