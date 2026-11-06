@@ -1,5 +1,5 @@
 /** System mailboxes only; user folders use `custom:${id}`. */
-export type SystemFolder = 'inbox' | 'sent' | 'drafts' | 'spam' | 'trash'
+export type SystemFolder = 'inbox' | 'sent' | 'drafts' | 'archive' | 'spam' | 'trash'
 
 /** Stored folder for a message (not virtual). */
 export type MailFolder = SystemFolder | `custom:${string}`

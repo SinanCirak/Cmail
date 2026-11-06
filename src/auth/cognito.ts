@@ -17,6 +17,7 @@ export type AuthSession = {
   idToken: string
   refreshToken?: string
   expiresAt: number
+  authMethod?: 'srp' | 'oauth'
 }
 
 function readEnv(name: string): string {
@@ -117,6 +118,7 @@ export async function signInWithPassword(username: string, password: string): Pr
           accessToken: session.getAccessToken().getJwtToken(),
           idToken: session.getIdToken().getJwtToken(),
           refreshToken: session.getRefreshToken()?.getToken(),
+          authMethod: 'srp',
           expiresAt: session.getIdToken().getExpiration() * 1000,
         })
       },
@@ -196,12 +198,100 @@ export async function exchangeCodeForTokens(code: string): Promise<AuthSession> 
     accessToken: payload.access_token,
     idToken: payload.id_token,
     refreshToken: payload.refresh_token,
+    authMethod: 'oauth',
     expiresAt: Date.now() + payload.expires_in * 1000,
   }
 }
 
+export const SESSION_CHANGED = 'cmail-session-changed'
+let sessionEpoch = 0
+let refreshInFlight: { token: string; promise: Promise<AuthSession> } | null = null
+
+export class SessionExpiredError extends Error {
+  constructor() { super('Session expired or invalid. Please sign in again.') }
+}
+
 export function saveSession(session: AuthSession) {
   localStorage.setItem(STORAGE_SESSION, JSON.stringify(session))
+  window.dispatchEvent(new Event(SESSION_CHANGED))
+}
+
+async function renewSession(session: AuthSession): Promise<AuthSession> {
+  const epoch = sessionEpoch
+  const settings = loadSettings()
+  const validation = ensureSettings(settings)
+  if (validation) throw new Error(validation)
+  let next: AuthSession
+  if (session.authMethod === 'oauth') {
+    const response = await fetch(`${settings.domain}/oauth2/token`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', client_id: settings.clientId, refresh_token: session.refreshToken! }).toString(),
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      if (payload.error === 'invalid_grant') throw new SessionExpiredError()
+      throw new Error('Could not renew your session. Please try again.')
+    }
+    next = { ...session, accessToken: payload.access_token, idToken: payload.id_token,
+      refreshToken: payload.refresh_token ?? session.refreshToken, expiresAt: Date.now() + payload.expires_in * 1000 }
+  } else {
+    const response = await fetch(`https://cognito-idp.${settings.region}.amazonaws.com/`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-amz-json-1.1', 'X-Amz-Target': 'AWSCognitoIdentityProviderService.InitiateAuth' },
+      body: JSON.stringify({ AuthFlow: 'REFRESH_TOKEN_AUTH', ClientId: settings.clientId, AuthParameters: { REFRESH_TOKEN: session.refreshToken } }),
+    })
+    const payload = await response.json()
+    if (!response.ok) {
+      const code = String(payload.__type ?? payload.code ?? '').split('#').pop()
+      if (code === 'NotAuthorizedException' || code === 'UserNotFoundException') throw new SessionExpiredError()
+      throw new Error('Could not renew your session. Please try again.')
+    }
+    const result = payload.AuthenticationResult
+    if (!result) throw new Error('Cognito did not return refreshed tokens.')
+    next = { ...session, accessToken: result.AccessToken, idToken: result.IdToken,
+      refreshToken: result.RefreshToken ?? session.refreshToken, expiresAt: Date.now() + result.ExpiresIn * 1000 }
+  }
+  if (!next.idToken || !next.accessToken || !Number.isFinite(next.expiresAt)) throw new Error('Invalid token refresh response.')
+  // A response that arrives after logout or an account switch must never restore the old login.
+  if (sessionEpoch !== epoch || getSession()?.refreshToken !== session.refreshToken) throw new SessionExpiredError()
+  saveSession(next)
+  return next
+}
+
+export async function getValidSession(forceRefresh = false, rejectedToken?: string): Promise<AuthSession> {
+  const session = getSession()
+  if (!session) throw new SessionExpiredError()
+  if ((!forceRefresh || (rejectedToken && session.idToken !== rejectedToken)) && isSessionValid(session)) return session
+  if (!session.refreshToken) {
+    clearSession()
+    throw new SessionExpiredError()
+  }
+  if (refreshInFlight?.token === session.refreshToken) return refreshInFlight.promise
+  const epoch = sessionEpoch
+  const promise = renewSession(session).catch((error: unknown) => {
+    if (error instanceof SessionExpiredError && sessionEpoch === epoch && getSession()?.refreshToken === session.refreshToken) clearSession()
+    throw error
+  })
+  refreshInFlight = { token: session.refreshToken, promise }
+  try { return await promise } finally {
+    if (refreshInFlight?.promise === promise) refreshInFlight = null
+  }
+}
+
+/** Refresh before API calls, then retry a rejected token once. Never retry a send on network/5xx errors. */
+export async function authenticatedFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const session = await getValidSession()
+  const run = (token: string) => {
+    const headers = new Headers(init.headers)
+    headers.set('Authorization', `Bearer ${token}`)
+    return fetch(input, { ...init, headers })
+  }
+  let response = await run(session.idToken)
+  if (response.status === 401) {
+    const renewed = await getValidSession(true, session.idToken)
+    response = await run(renewed.idToken)
+    if (response.status === 401 && getSession()?.idToken === renewed.idToken) clearSession()
+  }
+  return response
 }
 
 /**
@@ -227,7 +317,8 @@ function decodeJwtClaims(token: string): JwtClaims | null {
   try {
     const payload = token.split('.')[1]
     if (!payload) return null
-    return JSON.parse(atob(payload)) as JwtClaims
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    return JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))) as JwtClaims
   } catch {
     return null
   }
@@ -283,11 +374,11 @@ async function getCognitoUserForSession(session: AuthSession) {
 }
 
 export async function changePasswordWithSession(
-  session: AuthSession,
+  _session: AuthSession,
   currentPassword: string,
   newPassword: string,
 ): Promise<void> {
-  const { user } = await getCognitoUserForSession(session)
+  const { user } = await getCognitoUserForSession(await getValidSession())
   const cur = currentPassword.trim()
   const next = newPassword.trim()
   if (!cur || !next) throw new Error('Current and new password are required.')
@@ -307,10 +398,11 @@ export async function changePasswordWithSession(
 }
 
 export async function updateDisplayNameWithSession(
-  session: AuthSession,
+  _session: AuthSession,
   displayName: string,
 ): Promise<AuthSession> {
-  const { user, CognitoUserAttribute } = await getCognitoUserForSession(session)
+  const active = await getValidSession()
+  const { user, CognitoUserAttribute } = await getCognitoUserForSession(active)
   const name = displayName.trim()
   if (!name) throw new Error('Display name is required.')
   await new Promise<void>((resolve, reject) => {
@@ -325,12 +417,15 @@ export async function updateDisplayNameWithSession(
       },
     )
   })
-  // Return original session tokens; JWT must remain signed by Cognito.
-  return session
+  // Keep the latest signed tokens after a possible refresh.
+  return active
 }
 
 export function clearSession() {
+  sessionEpoch += 1
+  refreshInFlight = null
   localStorage.removeItem(STORAGE_SESSION)
+  window.dispatchEvent(new Event(SESSION_CHANGED))
 }
 
 export function isSessionValid(session: AuthSession): boolean {

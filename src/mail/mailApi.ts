@@ -1,4 +1,5 @@
-import type { MailFolder, MailContact, MailMessage } from '../types/mail'
+import { authenticatedFetch } from '../auth/cognito'
+import type { MailFolder, MailContact, MailMessage, InlineImagePart } from '../types/mail'
 
 const noCache: RequestInit = { cache: 'no-store' }
 
@@ -52,30 +53,33 @@ function toMailMessage(row: ApiMailRow): MailMessage {
   }
 }
 
-export async function fetchLiveMailbox(
-  apiBase: string,
-  token: string,
-  userFolders: { id: string }[],
-): Promise<MailMessage[]> {
-  const sys: MailFolder[] = ['inbox', 'sent', 'drafts', 'spam', 'trash']
-  const customs: MailFolder[] = userFolders.map((f) => `custom:${f.id}` as MailFolder)
-  const folders = [...sys, ...customs]
-  const chunks = await Promise.all(
-    folders.map(async (folder) => {
-      const res = await fetch(`${apiBase}/mail/messages?folder=${encodeURIComponent(folder)}`, {
-        ...noCache,
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      await failIfNotOk(res)
-      const data = (await res.json()) as { messages: ApiMailRow[] }
-      return data.messages.map(toMailMessage)
-    }),
-  )
-  return chunks.flat()
+export type MailboxPage = {
+  messages: MailMessage[]
+  total: number
+  nextCursor: string | null
+  start: number
+  end: number
+  counts: Record<string, number>
+  unreadInbox: number
+}
+
+export async function fetchMailboxPage(
+  apiBase: string, token: string,
+  options: { folder: string; q: string; unread: boolean; includeExcluded: boolean; cursor: string | null },
+): Promise<MailboxPage> {
+  const qs = new URLSearchParams({ folder: options.folder, q: options.q,
+    unread: String(options.unread), includeExcluded: String(options.includeExcluded) })
+  if (options.cursor) qs.set('cursor', options.cursor)
+  const res = await authenticatedFetch(`${apiBase}/mail/messages?${qs}`, {
+    ...noCache, headers: { Authorization: `Bearer ${token}` },
+  })
+  await failIfNotOk(res)
+  const data = await res.json() as Omit<MailboxPage, 'messages'> & { messages: ApiMailRow[] }
+  return { ...data, messages: data.messages.map(toMailMessage) }
 }
 
 export async function fetchUserFolders(apiBase: string, token: string): Promise<{ id: string; name: string }[]> {
-  const res = await fetch(`${apiBase}/mail/user-folders`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/user-folders`, {
     ...noCache,
     headers: { Authorization: `Bearer ${token}` },
   })
@@ -89,7 +93,7 @@ export async function createUserFolderApi(
   token: string,
   name: string,
 ): Promise<{ id: string; name: string }> {
-  const res = await fetch(`${apiBase}/mail/user-folders`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/user-folders`, {
     ...noCache,
     method: 'POST',
     headers: {
@@ -103,7 +107,7 @@ export async function createUserFolderApi(
 }
 
 export async function deleteUserFolderApi(apiBase: string, token: string, folderId: string): Promise<void> {
-  const res = await fetch(`${apiBase}/mail/user-folders/${encodeURIComponent(folderId)}`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/user-folders/${encodeURIComponent(folderId)}`, {
     ...noCache,
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` },
@@ -113,7 +117,7 @@ export async function deleteUserFolderApi(apiBase: string, token: string, folder
 
 /** Move message to a system folder or `custom:<uuid>`. */
 export async function moveMailMessage(apiBase: string, token: string, sk: string, folder: string): Promise<void> {
-  const res = await fetch(`${apiBase}/mail/message`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/message`, {
     ...noCache,
     method: 'PATCH',
     headers: {
@@ -164,9 +168,10 @@ export async function sendMailMessage(
     subject: string
     body: string
     attachments?: OutboundAttachment[]
+    inlineImages?: InlineImagePart[]
   },
 ): Promise<void> {
-  const res = await fetch(`${apiBase}/mail/send`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/send`, {
     ...noCache,
     method: 'POST',
     headers: {
@@ -180,7 +185,7 @@ export async function sendMailMessage(
 
 export async function deleteMailMessage(apiBase: string, token: string, sk: string): Promise<void> {
   const qs = new URLSearchParams({ sk })
-  const res = await fetch(`${apiBase}/mail/message?${qs.toString()}`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/message?${qs.toString()}`, {
     ...noCache,
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` },
@@ -196,7 +201,7 @@ export async function markMailMessagesReadState(
 ): Promise<void> {
   const uniq = [...new Set(sks.filter(Boolean))]
   if (uniq.length === 0) return
-  const res = await fetch(`${apiBase}/mail/messages/read`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/messages/read`, {
     ...noCache,
     method: 'PATCH',
     headers: {
@@ -223,7 +228,7 @@ export type MailContentPayload = {
 
 export async function fetchMailBody(apiBase: string, token: string, s3Key: string): Promise<MailContentPayload> {
   const qs = new URLSearchParams({ s3_key: s3Key })
-  const res = await fetch(`${apiBase}/mail/content?${qs.toString()}`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/content?${qs.toString()}`, {
     ...noCache,
     headers: { Authorization: `Bearer ${token}` },
   })
@@ -233,7 +238,7 @@ export async function fetchMailBody(apiBase: string, token: string, s3Key: strin
 
 /** Domains allowed to auto-load CID/inline images (stored in DynamoDB for live mail). */
 export async function fetchTrustedImageDomains(apiBase: string, token: string): Promise<string[]> {
-  const res = await fetch(`${apiBase}/mail/trusted-image-domains`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/trusted-image-domains`, {
     ...noCache,
     headers: { Authorization: `Bearer ${token}` },
   })
@@ -247,7 +252,7 @@ export async function addTrustedImageDomainApi(
   token: string,
   domain: string,
 ): Promise<{ domains: string[] }> {
-  const res = await fetch(`${apiBase}/mail/trusted-image-domains`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/trusted-image-domains`, {
     ...noCache,
     method: 'POST',
     headers: {
@@ -266,7 +271,7 @@ export async function removeTrustedImageDomainApi(
   domain: string,
 ): Promise<{ domains: string[] }> {
   const qs = new URLSearchParams({ domain })
-  const res = await fetch(`${apiBase}/mail/trusted-image-domains?${qs.toString()}`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/trusted-image-domains?${qs.toString()}`, {
     ...noCache,
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` },
@@ -280,7 +285,7 @@ export async function setTrustedImageDomainsApi(
   token: string,
   domains: string[],
 ): Promise<{ domains: string[] }> {
-  const res = await fetch(`${apiBase}/mail/trusted-image-domains`, {
+  const res = await authenticatedFetch(`${apiBase}/mail/trusted-image-domains`, {
     ...noCache,
     method: 'PUT',
     headers: {
@@ -300,4 +305,13 @@ export function mailApiConfigured(): boolean {
 
 export function mailApiBaseUrl(): string {
   return (import.meta.env.VITE_MAIL_API_URL as string | undefined)?.replace(/\/$/, '') ?? ''
+}
+
+export async function setMailStarred(apiBase: string, token: string, sk: string, starred: boolean): Promise<void> {
+  const res = await authenticatedFetch(`${apiBase}/mail/messages/star`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sk, starred }),
+  })
+  await failIfNotOk(res)
 }

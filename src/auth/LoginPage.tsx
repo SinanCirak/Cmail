@@ -80,11 +80,6 @@ export function LoginPage({
           </form>
         ) : null}
 
-        {showForm ? (
-          <p className="cm-login__hint">
-            Cognito verifies your credentials; the address bar stays on this site.
-          </p>
-        ) : null}
       </section>
     </main>
   )

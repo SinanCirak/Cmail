@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { MailDashboard } from './dashboard/MailDashboard'
 import { LoginPage } from './auth/LoginPage'
 import {
-  clearSession,
   exchangeCodeForTokens,
   getSession,
   getSettingsError,
   hasAuthSettings,
-  isSessionValid,
+  getValidSession,
+  SESSION_CHANGED,
+  SessionExpiredError,
   saveSession,
   signInWithPassword,
   signOutLocal,
@@ -54,15 +55,44 @@ export default function App() {
         return
       }
       const existing = getSession()
-      if (existing && isSessionValid(existing)) {
-        setSession(existing)
-      } else {
-        clearSession()
+      if (existing) {
+        try { setSession(await getValidSession()) } catch (error) {
+          // Temporary connectivity failures must not discard a valid refresh token.
+          if (!(error instanceof SessionExpiredError)) setSession(existing)
+        }
       }
       setAuthLoading(false)
     }
     void bootstrapAuth()
   }, [isConfigured])
+
+  useEffect(() => {
+    const sync = () => setSession(getSession())
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'cmail-auth-session' || event.key === null) sync()
+    }
+    window.addEventListener(SESSION_CHANGED, sync)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(SESSION_CHANGED, sync)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!session) return
+    const renew = () => {
+      if (!document.hidden) void getValidSession().catch(() => { /* Retry on next tick/focus or API request. */ })
+    }
+    const timer = window.setInterval(renew, 30_000)
+    window.addEventListener('focus', renew)
+    document.addEventListener('visibilitychange', renew)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', renew)
+      document.removeEventListener('visibilitychange', renew)
+    }
+  }, [session])
 
   if (!isConfigured) {
     return (

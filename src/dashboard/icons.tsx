@@ -1,219 +1,108 @@
+import type { ReactNode } from 'react'
+
 type IconProps = { className?: string; title?: string }
-
-export function IconInbox({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M4 6h16v12H4V6z" strokeLinejoin="round" />
-      <path d="M4 10l4 4h8l4-4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
+function Icon({ className, title, children }: IconProps & { children: ReactNode }) {
+  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden={title ? undefined : true}>
+    {title ? <title>{title}</title> : null}{children}
+  </svg>
 }
 
-export function IconStar({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M12 3.5l2.1 5.1 5.5.4-4.2 3.6 1.3 5.4L12 15.9 7.3 18l1.3-5.4-4.2-3.6 5.5-.4L12 3.5z" />
-    </svg>
-  )
+export function IconInbox(props: IconProps) {
+  return <Icon {...props}><path d="M4 4h16v16H4z"/><path d="M4 13h4l2 3h4l2-3h4"/></Icon>
 }
 
-export function IconSend({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M22 2L11 13" strokeLinecap="round" />
-      <path d="M22 2l-7 20-4-9-9-4 20-7z" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconStar(props: IconProps) {
+  return <Icon {...props}><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></Icon>
 }
 
-export function IconDraft({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M4 20h16" strokeLinecap="round" />
-      <path d="M4 4h10l6 6v10H4V4z" strokeLinejoin="round" />
-      <path d="M14 4v6h6" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconSend(props: IconProps) {
+  return <Icon {...props}><path d="m21 3-7 18-4-7-7-4L21 3Z"/><path d="m10 14 5-5"/></Icon>
 }
 
-export function IconSpam({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M12 9v4" strokeLinecap="round" />
-      <circle cx="12" cy="16" r="1" fill="currentColor" stroke="none" />
-      <path d="M5 20l1.5-12A2 2 0 019.5 6h5a2 2 0 011.9 1.5L19 20" strokeLinecap="round" />
-    </svg>
-  )
+export function IconDraft(props: IconProps) {
+  return <Icon {...props}><path d="M14 3H5v18h14V8l-5-5Z"/><path d="M14 3v5h5M8 12h8M8 16h5"/></Icon>
 }
 
-export function IconTrash({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M4 7h16" strokeLinecap="round" />
-      <path d="M10 11v6M14 11v6" strokeLinecap="round" />
-      <path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2" />
-      <path d="M6 7l1 14a2 2 0 002 1.8h8a2 2 0 002-1.8l1-14" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconSpam(props: IconProps) {
+  return <Icon {...props}><path d="m8 3-5 5v8l5 5h8l5-5V8l-5-5H8Z"/><path d="M12 7v6m0 4h.01"/></Icon>
 }
 
-export function IconSearch({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <circle cx="11" cy="11" r="7" />
-      <path d="M20 20l-3-3" strokeLinecap="round" />
-    </svg>
-  )
+export function IconTrash(props: IconProps) {
+  return <Icon {...props}><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></Icon>
 }
 
-export function IconMenu({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M4 7h16M4 12h16M4 17h16" strokeLinecap="round" />
-    </svg>
-  )
+export function IconSearch(props: IconProps) {
+  return <Icon {...props}><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></Icon>
 }
 
-export function IconRefresh({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M21 12a9 9 0 11-3-7" strokeLinecap="round" />
-      <path d="M21 3v6h-6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconMenu(props: IconProps) {
+  return <Icon {...props}><path d="M4 6h16M4 12h16M4 18h12"/></Icon>
 }
 
-export function IconSettings({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 2v2M12 20v2M4.9 4.9l1.5 1.5M17.6 17.6l1.5 1.5M2 12h2M20 12h2M4.9 19.1l1.5-1.5M17.6 6.4l1.5-1.5" strokeLinecap="round" />
-    </svg>
-  )
+export function IconRefresh(props: IconProps) {
+  return <Icon {...props}><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.2 6.2a8 8 0 0 1 13.6 5.3M4.2 12.5a8 8 0 0 0 13.6 5.3"/></Icon>
 }
 
-export function IconPaperclip({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M21.4 12.6a5 5 0 01-7 0l-7-7a5 5 0 117 7l-7 7a5 5 0 01-7 0" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconSettings(props: IconProps) {
+  return <Icon {...props}><path d="m9 3-.5 2-2 1.2-2-.5L2 10l1.5 1.5v2L2 15l2.5 4.3 2-.5 2 1.2.5 2h6l.5-2 2-1.2 2 .5L22 15l-1.5-1.5v-2L22 10l-2.5-4.3-2 .5-2-1.2L15 3H9Z"/><circle cx="12" cy="12.5" r="3.2"/></Icon>
 }
 
-export function IconArchive({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M4 8h16v12H4V8z" strokeLinejoin="round" />
-      <path d="M4 8l2-3h12l2 3" strokeLinejoin="round" />
-      <path d="M10 12h4" strokeLinecap="round" />
-    </svg>
-  )
+export function IconPaperclip(props: IconProps) {
+  return <Icon {...props}><path d="m8 13 7-7a3.5 3.5 0 0 1 5 5l-9 9a5 5 0 0 1-7-7l9-9M7 16l9-9"/></Icon>
 }
 
-export function IconChevronLeft({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconArchive(props: IconProps) {
+  return <Icon {...props}><rect x="3" y="3" width="18" height="4" rx="1"/><path d="M5 7v14h14V7M10 11h4"/></Icon>
 }
 
-export function IconClose({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
-    </svg>
-  )
+export function IconChevronLeft(props: IconProps) {
+  return <Icon {...props}><path d="m15 5-7 7 7 7"/></Icon>
 }
 
-export function IconCompose({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M12 20h9" strokeLinecap="round" />
-      <path d="M16.5 3.5a2.1 2.1 0 013 3L8 18l-4 1 1-4 11.5-11.5z" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconClose(props: IconProps) {
+  return <Icon {...props}><path d="m6 6 12 12M18 6 6 18"/></Icon>
 }
 
-export function IconFolder({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M4 6h6l2 2h8v10H4V6z" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconCompose(props: IconProps) {
+  return <Icon {...props}><path d="M12 4H4v16h16v-8"/><path d="m15.5 3.5 5 5M10 9l6.5-6.5a2.1 2.1 0 0 1 3 3L13 12l-4 1 1-4Z"/></Icon>
 }
 
-export function IconFolderPlus({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M4 6h6l2 2h8v10H4V6z" strokeLinejoin="round" />
-      <path d="M12 11v6M9 14h6" strokeLinecap="round" />
-    </svg>
-  )
+export function IconFolder(props: IconProps) {
+  return <Icon {...props}><path d="M3 7V4h6l3 3h9v13H3V7Z"/></Icon>
 }
 
-export function IconMoon({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M21 12.8A8.5 8.5 0 0111.2 3a7 7 0 109.8 9.8z" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconFolderPlus(props: IconProps) {
+  return <Icon {...props}><path d="M3 7V4h6l3 3h9v13H3V7Z"/><path d="M12 10v7m-3.5-3.5h7"/></Icon>
 }
 
-export function IconSun({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" strokeLinecap="round" />
-    </svg>
-  )
+export function IconMoon(props: IconProps) {
+  return <Icon {...props}><path d="M20.8 13.2A8.5 8.5 0 0 1 10.8 3 8.8 8.8 0 1 0 20.8 13.2Z"/></Icon>
 }
 
-export function IconMove({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M5 9h14M9 5l-4 4 4 4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M19 15h-6a2 2 0 00-2 2v4" strokeLinecap="round" />
-    </svg>
-  )
+export function IconSun(props: IconProps) {
+  return <Icon {...props}><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></Icon>
 }
 
-export function IconReply({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M9 14L4 9l5-5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4 9h10.5a5.5 5.5 0 010 11H12" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconMove(props: IconProps) {
+  return <Icon {...props}><path d="M3 7V4h6l3 3h9v13H3V7Z"/><path d="M8 13h8m-3-3 3 3-3 3"/></Icon>
 }
 
-export function IconForward({ className, title }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden={title ? undefined : true}>
-      {title ? <title>{title}</title> : null}
-      <path d="M15 14l5-5-5-5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M20 9H9.5a5.5 5.5 0 100 11H12" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
+export function IconReply(props: IconProps) {
+  return <Icon {...props}><path d="m9 5-6 6 6 6"/><path d="M3 11h11a7 7 0 0 1 7 7v2"/></Icon>
+}
+
+export function IconForward(props: IconProps) {
+  return <Icon {...props}><path d="m15 5 6 6-6 6"/><path d="M21 11H10a7 7 0 0 0-7 7v2"/></Icon>
+}
+
+export function IconPrint(props: IconProps) {
+  return <Icon {...props}><path d="M6 8V3h12v5M6 17H3V8h18v9h-3"/><path d="M6 14h12v7H6zM17 11h1"/></Icon>
+}
+
+export function IconExpand(props: IconProps) {
+  return <Icon {...props}><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><path d="m3 3 6 6m12-6-6 6M3 21l6-6m12 6-6-6"/></Icon>
+}
+
+export function IconCollapse(props: IconProps) {
+  return <Icon {...props}><path d="M9 3v6H3m12-6v6h6M3 15h6v6m6 0v-6h6"/></Icon>
 }

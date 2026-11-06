@@ -208,7 +208,10 @@
 }
 
 .cm-avatar {
-  width: 2.25rem;
+  width: auto;
+  min-width: 2.25rem;
+  max-width: min(180px, 28vw);
+  padding: 0 .75rem;
   height: 2.25rem;
   border-radius: 10px;
   border: none;
@@ -216,12 +219,15 @@
   color: #fff;
   font-size: 0.75rem;
   font-weight: 600;
-  cursor: pointer;
+  cursor: default;
   margin-left: 0.25rem;
 }
 
-.cm-avatar__initials {
+.cm-avatar__name {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   line-height: 2.25rem;
   text-align: center;
 }
@@ -497,9 +503,7 @@
 .cm-panes {
   flex: 1;
   display: grid;
-  /* --cm-list-pane-width set inline from React (resizable list); must not use inline grid-template (breaks mobile) */
-  --cm-list-pane-width: 360px;
-  grid-template-columns: minmax(260px, min(var(--cm-list-pane-width), 100%)) 10px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -813,46 +817,20 @@
   overflow: hidden;
 }
 
-/* Resizable split */
-
-.cm-splitter {
-  position: relative;
-  background: transparent;
-  cursor: col-resize;
-  display: flex;
-  align-items: stretch;
-  justify-content: center;
-  user-select: none;
-  touch-action: none;
-  min-height: 0;
+/* List and message views share the full content area on every screen size. */
+.cm-panes--detail .cm-list-pane {
+  display: none;
 }
 
-.cm-splitter::before {
-  content: '';
-  width: 2px;
-  height: 100%;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.6);
-  opacity: 0.45;
-  transition: opacity 0.15s, background 0.15s;
-}
-
-.cm-splitter:hover::before,
-.cm-splitter:focus-visible::before {
-  opacity: 1;
-  background: rgba(14, 165, 233, 0.9);
-}
-
-.cm-splitter:focus-visible {
-  outline: 2px solid var(--cm-accent);
-  outline-offset: -2px;
-  border-radius: 8px;
+.cm-panes:not(.cm-panes--detail) .cm-read-pane {
+  display: none;
 }
 
 .cm-read__bar {
-  display: none;
+  display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 0.75rem;
   padding: 0.5rem 0.75rem;
   background: var(--cm-surface);
   border-bottom: 1px solid var(--cm-border);
@@ -868,16 +846,19 @@
 }
 
 .cm-read {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 1.5rem 2rem 2rem;
-  max-width: 52rem;
+  max-width: none;
   width: 100%;
 }
 
 .cm-read__meta-panel {
+  flex-shrink: 0;
   padding: 1rem 1.1rem 1.1rem;
   margin: 0 0 1.25rem;
   border-radius: var(--cm-radius-sm);
@@ -932,9 +913,15 @@
 }
 
 .cm-read__body-zone {
-  flex: 1;
-  min-height: 0;
-  padding-top: 0.25rem;
+  flex: 1 0 auto;
+  min-height: 16rem;
+  min-width: 0;
+  padding: clamp(1rem, 2vw, 1.5rem);
+  border: 1px solid var(--cm-border);
+  border-radius: var(--cm-radius-sm);
+  background: var(--cm-surface);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
+  overflow-wrap: anywhere;
 }
 
 .cm-read__iframe {
@@ -1812,7 +1799,8 @@
   background: #0c101a;
 }
 
-.cm-shell.cm-shell--dark .cm-read__meta-panel {
+.cm-shell.cm-shell--dark .cm-read__meta-panel,
+.cm-shell.cm-shell--dark .cm-read__body-zone {
   background: rgba(255, 255, 255, 0.04);
   border-color: var(--cm-border);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -2084,3 +2072,28 @@
   border-color: #1e293b;
   box-shadow: none;
 }
+
+.cm-pagination { display: flex; align-items: center; gap: .25rem; margin-left: auto; }
+.cm-icon--next { transform: rotate(180deg); }
+.cm-search-options { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; font-size: .8rem; }
+.cm-search-options select { padding: .4rem; color: var(--cm-text); background: var(--cm-surface); border: 1px solid var(--cm-border); border-radius: 6px; }
+.cm-search-options label { display: flex; align-items: center; gap: .35rem; }
+
+.cm-compose-quote { margin-top: 1rem; border: 1px solid var(--cm-border); border-radius: 10px; overflow: hidden; background: #fff; }
+.cm-compose-quote__bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; padding: .5rem .75rem; background: var(--cm-surface); color: var(--cm-text-muted); font-size: .8rem; border-bottom: 1px solid var(--cm-border); }
+
+/* Keep the quoted mail in the compose scroll flow instead of flex-shrinking it away. */
+.cm-compose-modal__head,
+.cm-compose-modal__foot,
+.cm-compose-modal__fields > .cm-field,
+.cm-compose-quote { flex-shrink: 0; }
+.cm-compose-modal__fields { min-height: 0; }
+.cm-compose-modal__fields > .cm-field--grow { flex: 0 0 auto; }
+.cm-compose-modal__panel--quoted .cm-attach-zone__card { min-height: 0; padding: .65rem; flex-direction: row; justify-content: flex-start; gap: .6rem; }
+.cm-compose-modal__panel--quoted .cm-attach-zone__icon { width: 20px; height: 20px; }
+.cm-compose-modal__panel--quoted .cm-attach-zone__hint,
+.cm-compose-modal__panel--quoted .cm-attach-zone__limit { display: none; }
+.cm-compose-modal__panel--quoted .cm-field--grow .cm-rich-editor { flex: 0 0 auto; min-height: 170px; }
+.cm-compose-modal__panel--quoted .cm-editor-content,
+.cm-compose-modal__panel--quoted .cm-editor-content .cm-editor-prose.tiptap { min-height: 90px; }
+.cm-compose-quote iframe { min-height: 120px; }

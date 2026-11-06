@@ -3,10 +3,11 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
+  type CSSProperties,
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
 } from 'react'
 import {
   changePasswordWithSession,
@@ -22,7 +23,8 @@ import {
   createUserFolderApi,
   deleteMailMessage,
   deleteUserFolderApi,
-  fetchLiveMailbox,
+  fetchMailboxPage,
+  type MailboxPage,
   fetchMailBody,
   fetchTrustedImageDomains,
   fetchUserFolders,
@@ -34,6 +36,7 @@ import {
   removeTrustedImageDomainApi,
   sendMailMessage,
   setTrustedImageDomainsApi,
+  setMailStarred,
 } from '../mail/mailApi'
 import type { MailFolder, MailMessage, NavFolder, UserFolder } from '../types/mail'
 import { customFolderKey } from '../types/mail'
@@ -45,9 +48,12 @@ const ComposeRichEditor = lazy(() =>
 
 import {
   IconArchive,
+  IconPrint,
   IconChevronLeft,
   IconClose,
   IconCompose,
+  IconExpand,
+  IconCollapse,
   IconDraft,
   IconFolder,
   IconFolderPlus,
@@ -67,20 +73,23 @@ import {
   IconSun,
   IconTrash,
 } from './icons'
+import { prepareMailQuote, type MailQuote } from '../mail/mailQuote'
+import { downloadMailPdf } from '../mail/mailPdf'
 import './MailDashboard.css'
+import './MailWorkspace.css'
 
 const SYSTEM_NAV: { id: NavFolder; label: string; icon: typeof IconInbox }[] = [
   { id: 'inbox', label: 'Inbox', icon: IconInbox },
   { id: 'starred', label: 'Starred', icon: IconStar },
   { id: 'sent', label: 'Sent', icon: IconSend },
   { id: 'drafts', label: 'Drafts', icon: IconDraft },
+  { id: 'archive', label: 'Archive', icon: IconArchive },
   { id: 'spam', label: 'Spam', icon: IconSpam },
   { id: 'trash', label: 'Trash', icon: IconTrash },
 ]
 
 const STORAGE_FOLDERS = 'cmail-user-folders'
 const STORAGE_THEME = 'cmail-theme'
-const STORAGE_SPLIT = 'cmail-split-list-width'
 const STORAGE_TRUSTED_IMAGE_DOMAINS = 'cmail-trusted-image-domains'
 /**
  * Message ids (mail row `id`) for which the user chose to load CID/inline images.
@@ -211,29 +220,6 @@ function isSenderDomainTrustedForInlineImages(senderDomain: string, trusted: Set
 }
 
 type SettingsTab = 'account' | 'security' | 'appearance' | 'privacy'
-
-function clamp(n: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, n))
-}
-
-function loadSplitWidth(): number | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_SPLIT)
-    if (!raw) return null
-    const v = Number(raw)
-    return Number.isFinite(v) ? v : null
-  } catch {
-    return null
-  }
-}
-
-function saveSplitWidth(v: number) {
-  try {
-    localStorage.setItem(STORAGE_SPLIT, String(v))
-  } catch {
-    /* ignore */
-  }
-}
 
 function SettingsModal(props: {
   open: boolean
@@ -695,6 +681,7 @@ function stripHtml(html: string): string {
   if (typeof window === 'undefined') return html.replace(/<[^>]+>/g, ' ')
   const d = document.createElement('div')
   d.innerHTML = html
+  d.querySelectorAll('style,script,noscript,template').forEach((el) => el.remove())
   return (d.innerText || d.textContent || '').trim()
 }
 
@@ -722,6 +709,8 @@ function filterBySearch(emails: MailMessage[], q: string): MailMessage[] {
       m.snippet,
       m.from.name,
       m.from.email,
+      stripHtml(m.body),
+      ...m.to.map((person) => person.email),
       ...(m.labels ?? []),
     ]
       .join(' ')
@@ -741,6 +730,7 @@ export function MailDashboard({
   const useLiveMail = mailApiConfigured()
   const mailApiBase = mailApiBaseUrl()
   const fetchedBodyIds = useRef<Set<string>>(new Set())
+  const bodyCache = useRef(new Map<string, Partial<MailMessage>>())
   const currentEmail = emailFromIdToken()
   const [accountDisplayName, setAccountDisplayName] = useState(() => getDisplayNameFromSession(getSession()))
 
@@ -755,23 +745,29 @@ export function MailDashboard({
   const [folder, setFolder] = useState<NavFolder>('inbox')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [searchScope, setSearchScope] = useState<'all' | 'folder'>('all')
+  const [includeExcluded, setIncludeExcluded] = useState(false)
+  const [pageData, setPageData] = useState<MailboxPage | null>(null)
+  const [pagination, setPagination] = useState<{ key: string; cursors: (string | null)[]; index: number }>({ key: '', cursors: [null], index: 0 })
+  const loadVersion = useRef(0)
+  const reloadMailboxRef = useRef<(() => Promise<void>) | null>(null)
+  const listRef = useRef<HTMLUListElement>(null)
   const [showUnreadOnly, setShowUnreadOnly] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
+  const [composeExpanded, setComposeExpanded] = useState(false)
+  const [composeBounds, setComposeBounds] = useState<CSSProperties>({})
+  const workspaceRef = useRef<HTMLElement>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [mobileShowDetail, setMobileShowDetail] = useState(false)
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(() => new Set())
+  const [pdfBusy, setPdfBusy] = useState(false)
+  const [starPendingIds, setStarPendingIds] = useState<Set<string>>(() => new Set())
+  const starPending = useRef(new Map<string, boolean>())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const sessionInvalid = mailLoadError?.includes('Session expired or invalid') ?? false
 
-  const panesRef = useRef<HTMLElement | null>(null)
   const selectAllCheckboxRef = useRef<HTMLInputElement>(null)
-  const dragRef = useRef<{ active: boolean; startX: number; startW: number }>({
-    active: false,
-    startX: 0,
-    startW: 0,
-  })
-  const [listWidth, setListWidth] = useState<number>(() => loadSplitWidth() ?? 360)
-
+  const topbarRef = useRef<HTMLElement>(null)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
       const raw = localStorage.getItem(STORAGE_THEME) as 'light' | 'dark' | null
@@ -789,6 +785,8 @@ export function MailDashboard({
   const [composeBcc, setComposeBcc] = useState('')
   const [composeSubject, setComposeSubject] = useState('')
   const [composeBody, setComposeBody] = useState('')
+  const [composeQuote, setComposeQuote] = useState<MailQuote | null>(null)
+  const [quoteBusy, setQuoteBusy] = useState(false)
   const [composeShowCcBcc, setComposeShowCcBcc] = useState(false)
   const [composeFiles, setComposeFiles] = useState<File[]>([])
   const [composeSending, setComposeSending] = useState(false)
@@ -829,38 +827,52 @@ export function MailDashboard({
     }
   }, [userFolders])
 
+  useEffect(() => {
+    const header = topbarRef.current
+    if (!header) return
+    const measure = () => (header.closest('.cm-shell') as HTMLElement)?.style.setProperty('--cm-header-offset', `${header.getBoundingClientRect().height}px`)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(header)
+    return () => observer.disconnect()
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!composeOpen || !composeExpanded || !workspaceRef.current) return
+    const workspace = workspaceRef.current
+    const measure = () => {
+      const rect = workspace.getBoundingClientRect()
+      setComposeBounds({
+        '--cm-compose-left': `${rect.left}px`, '--cm-compose-top': `${rect.top}px`,
+        '--cm-compose-width': `${rect.width}px`, '--cm-compose-height': `${rect.height}px`,
+      } as CSSProperties)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(workspace)
+    window.addEventListener('resize', measure)
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure) }
+  }, [composeOpen, composeExpanded])
+
   const toggleTheme = useCallback(() => {
     setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
   }, [])
 
   useEffect(() => {
-    saveSplitWidth(listWidth)
-  }, [listWidth])
-
-  const beginResize = useCallback((e: React.PointerEvent) => {
-    if (e.button !== 0) return
-    const el = panesRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const max = Math.max(420, rect.width - 360)
-    dragRef.current = { active: true, startX: e.clientX, startW: listWidth }
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-    const onMove = (ev: PointerEvent) => {
-      if (!dragRef.current.active) return
-      const dx = ev.clientX - dragRef.current.startX
-      const next = clamp(dragRef.current.startW + dx, 280, max)
-      setListWidth(next)
-    }
-    const onUp = () => {
-      dragRef.current.active = false
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp, { once: true })
-  }, [listWidth])
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 250)
+    return () => window.clearTimeout(timer)
+  }, [search])
+  const queryKey = JSON.stringify([folder, debouncedSearch, searchScope, includeExcluded, showUnreadOnly])
+  const pageIndex = pagination.key === queryKey ? pagination.index : 0
+  const cursor = pagination.key === queryKey ? pagination.cursors[pageIndex] ?? null : null
+  useEffect(() => {
+    setSelectedId(null)
+    setBulkSelectedIds(new Set())
+    listRef.current?.scrollTo(0, 0)
+  }, [queryKey, cursor])
 
   const counts = useMemo(() => {
+    if (useLiveMail) return pageData?.counts ?? {}
     const c: Record<string, number> = { starred: 0 }
     for (const m of emails) {
       c[m.folder] = (c[m.folder] ?? 0) + 1
@@ -869,20 +881,31 @@ export function MailDashboard({
       }
     }
     return c
-  }, [emails])
+  }, [emails, useLiveMail, pageData])
 
   type ListMailRow = MailMessage & { threadCount?: number; threadIds?: string[] }
+  const filteredDemoEmails = useMemo(() => {
+    if (useLiveMail) return []
+    const source = debouncedSearch && searchScope === 'all'
+      ? emails.filter((m) => includeExcluded || (m.folder !== 'spam' && m.folder !== 'trash'))
+      : filterByFolder(emails, folder)
+    return filterBySearch(showUnreadOnly ? source.filter((m) => !m.read) : source, debouncedSearch)
+      .sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())
+  }, [useLiveMail, emails, debouncedSearch, searchScope, includeExcluded, folder, showUnreadOnly])
   const listEmails = useMemo<ListMailRow[]>(() => {
-    const byFolder = filterByFolder(emails, folder)
-    const byRead = showUnreadOnly ? byFolder.filter((m) => !m.read) : byFolder
-    const searched = filterBySearch(byRead, search).sort(
-      (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime(),
-    )
-
-    // Do not collapse by "Re:/Fwd:" subject. Different mails can share the same
-    // subject prefix but still be separate messages for the user.
-    return searched.map((msg) => ({ ...msg, threadCount: 1, threadIds: [msg.id] }))
-  }, [emails, folder, search, showUnreadOnly])
+    const source = useLiveMail ? emails : filteredDemoEmails.slice(pageIndex * 25, (pageIndex + 1) * 25)
+    return source.map((msg) => ({ ...msg, threadCount: 1, threadIds: [msg.id] }))
+  }, [useLiveMail, emails, filteredDemoEmails, pageIndex])
+  const totalMessages = useLiveMail ? pageData?.total ?? 0 : filteredDemoEmails.length
+  const pageStart = useLiveMail ? pageData?.start ?? 0 : totalMessages ? pageIndex * 25 + 1 : 0
+  const pageEnd = useLiveMail ? pageData?.end ?? 0 : Math.min((pageIndex + 1) * 25, totalMessages)
+  const changePage = (direction: -1 | 1) => {
+    setPagination((prev) => {
+      const cursors = prev.key === queryKey ? [...prev.cursors] : [null]
+      if (direction === 1) cursors[pageIndex + 1] = pageData?.nextCursor ?? null
+      return { key: queryKey, cursors: [...cursors], index: Math.max(0, pageIndex + direction) }
+    })
+  }
 
   const actionIdsForDisplayId = useMemo(() => {
     const m = new Map<string, string[]>()
@@ -1043,10 +1066,14 @@ export function MailDashboard({
   }, [useLiveMail, mailApiBase])
 
   useEffect(() => {
+    if (authSessionExpiresAt) void syncTrustedImageDomainsFromApi()
+  }, [authSessionExpiresAt, syncTrustedImageDomainsFromApi])
+
+  useEffect(() => {
     setSelectedId((prev) => {
       if (listEmails.length === 0) return null
       if (prev && listEmails.some((m) => m.id === prev)) return prev
-      return listEmails[0].id
+      return null
     })
   }, [listEmails])
 
@@ -1061,7 +1088,7 @@ export function MailDashboard({
   }, [search])
 
   useEffect(() => {
-    setMobileShowDetail(false)
+    setSelectedId(null)
     setBulkSelectedIds(new Set())
   }, [folder])
 
@@ -1086,12 +1113,41 @@ export function MailDashboard({
     }
   }, [sidebarOpen])
 
-  const toggleStar = useCallback((id: string, e?: React.MouseEvent) => {
+  const toggleStar = useCallback(async (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
-    setEmails((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, starred: !m.starred } : m)),
-    )
-  }, [])
+    const msg = emails.find((m) => m.id === id)
+    if (!msg || starPending.current.has(id)) return
+    const starred = !msg.starred
+    const session = getSession()
+    if (useLiveMail && !session) return
+    starPending.current.set(id, starred)
+    setStarPendingIds(new Set(starPending.current.keys()))
+    setEmails((prev) => prev.map((m) => m.id === id ? { ...m, starred } : m))
+    try {
+      if (useLiveMail && mailApiBase && session) {
+        await setMailStarred(mailApiBase, getBearerTokenForApi(session), id, starred)
+        await reloadMailboxRef.current?.()
+      }
+    } catch (error) {
+      setEmails((prev) => prev.map((m) => m.id === id ? { ...m, starred: msg.starred } : m))
+      setMailLoadError(error instanceof Error ? error.message : 'Could not update star')
+    } finally {
+      starPending.current.delete(id)
+      setStarPendingIds(new Set(starPending.current.keys()))
+    }
+  }, [emails, useLiveMail, mailApiBase])
+
+  const exportSelectedPdf = useCallback(async () => {
+    if (!selected || pdfBusy) return
+    setPdfBusy(true)
+    try {
+      await downloadMailPdf(selected, allowInlineImages)
+    } catch (error) {
+      setMailLoadError(error instanceof Error ? error.message : 'Could not create PDF')
+    } finally {
+      setPdfBusy(false)
+    }
+  }, [selected, pdfBusy, allowInlineImages])
 
   const toggleSelectAll = useCallback(() => {
     setBulkSelectedIds((prev) => {
@@ -1130,12 +1186,12 @@ export function MailDashboard({
         }
       }
     }
-    setMobileShowDetail(true)
   }, [useLiveMail, mailApiBase, actionIdsForDisplayId])
 
   const loadLiveMailbox = useCallback(async (opts?: { silent?: boolean }) => {
     if (!useLiveMail || !mailApiBase) return
     const silent = opts?.silent === true
+    const version = ++loadVersion.current
     const session = getSession()
     if (!session) {
       setMailLoadError('Sign in to load your mail from the archive.')
@@ -1147,14 +1203,25 @@ export function MailDashboard({
     }
     try {
       const token = getBearerTokenForApi(session)
-      await syncTrustedImageDomainsFromApi()
-      const folders = await fetchUserFolders(mailApiBase, token)
+      const [data, folders] = await Promise.all([
+        fetchMailboxPage(mailApiBase, token, {
+          folder: debouncedSearch && searchScope === 'all' ? 'all' : folder,
+          q: debouncedSearch, unread: showUnreadOnly, includeExcluded, cursor,
+        }),
+        fetchUserFolders(mailApiBase, token),
+      ])
+      if (version !== loadVersion.current) return
+      if (!data.messages.length && cursor) {
+        setPagination((prev) => ({ ...prev, index: Math.max(0, prev.index - 1) }))
+        return
+      }
       setUserFolders(folders)
-      const list = await fetchLiveMailbox(mailApiBase, token, folders)
+      setPageData(data)
+      const list = data.messages
       setEmails((prev) => {
         const prevById = new Map(prev.map((m) => [m.id, m]))
         return list.map((m) => {
-          const old = prevById.get(m.id)
+          const old = prevById.get(m.id) ?? bodyCache.current.get(m.id)
           return {
             ...m,
             read: m.read,
@@ -1165,24 +1232,27 @@ export function MailDashboard({
             bcc: old?.bcc?.length ? old.bcc : m.bcc,
             attachments: old?.attachments?.length ? old.attachments : m.attachments,
             inlineImages: old?.inlineImages?.length ? old.inlineImages : m.inlineImages,
-            starred: old?.starred ?? m.starred,
+            starred: starPending.current.get(m.id) ?? m.starred,
           }
         })
       })
     } catch (e) {
-      if (!silent) {
+      if (version === loadVersion.current) {
         setMailLoadError(e instanceof Error ? e.message : 'Could not load mail.')
       }
     } finally {
-      if (!silent) {
+      if (version === loadVersion.current) {
         setMailLoading(false)
       }
     }
-  }, [useLiveMail, mailApiBase, syncTrustedImageDomainsFromApi, authSessionExpiresAt])
+  }, [useLiveMail, mailApiBase, folder, debouncedSearch, searchScope, showUnreadOnly, includeExcluded, cursor])
+
+  useEffect(() => { reloadMailboxRef.current = loadLiveMailbox }, [loadLiveMailbox])
 
   useEffect(() => {
     if (!useLiveMail) return
     void loadLiveMailbox()
+    return () => { loadVersion.current += 1 }
   }, [useLiveMail, loadLiveMailbox])
 
   useEffect(() => {
@@ -1250,6 +1320,11 @@ export function MailDashboard({
           contentType: a.contentType,
           contentBase64: a.contentBase64,
         }))
+        bodyCache.current.set(id, {
+          body: payload.body, bodyIsHtml: payload.isHtml, to: payload.to,
+          cc: payload.cc, bcc: payload.bcc, from: payload.from ?? undefined,
+          attachments: atts, inlineImages: payload.inlineImages,
+        })
         setEmails((prev) =>
           prev.map((m) =>
             m.id === id
@@ -1270,7 +1345,6 @@ export function MailDashboard({
         )
       } catch (e) {
         if (cancelled) return
-        fetchedBodyIds.current.add(id)
         const msg = e instanceof Error ? e.message : 'Error'
         setEmails((prev) =>
           prev.map((m) =>
@@ -1289,13 +1363,13 @@ export function MailDashboard({
     }
   }, [useLiveMail, mailApiBase, selected?.id, selected?.s3Key])
 
-  const goBackMobile = useCallback(() => {
-    setMobileShowDetail(false)
+  const goBackToList = useCallback(() => {
+    setSelectedId(null)
   }, [])
 
   const unreadInInbox = useMemo(
-    () => emails.filter((m) => m.folder === 'inbox' && !m.read).length,
-    [emails],
+    () => useLiveMail ? pageData?.unreadInbox ?? 0 : emails.filter((m) => m.folder === 'inbox' && !m.read).length,
+    [emails, useLiveMail, pageData],
   )
 
   useEffect(() => {
@@ -1358,16 +1432,16 @@ export function MailDashboard({
     [emails, useLiveMail, mailApiBase, loadLiveMailbox],
   )
 
-  /** Inbox-only triage: move to Trash (until a real Archive folder/API exists). */
-  const archiveFromInbox = useCallback(
+  /** Move selected messages into the Archive system folder. */
+  const archiveMessage = useCallback(
     async (messageId: string) => {
       const msg = emails.find((m) => m.id === messageId)
-      if (!msg || msg.folder !== 'inbox') return
+      if (!msg || msg.folder === 'archive') return
       if (useLiveMail && mailApiBase) {
         const session = getSession()
         if (!session) return
         try {
-          await moveMailMessage(mailApiBase, getBearerTokenForApi(session), messageId, 'trash')
+          await moveMailMessage(mailApiBase, getBearerTokenForApi(session), messageId, 'archive')
           await loadLiveMailbox()
         } catch (e) {
           setMailLoadError(e instanceof Error ? e.message : 'Archive failed')
@@ -1375,21 +1449,24 @@ export function MailDashboard({
         return
       }
       setEmails((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, folder: 'trash' as const } : m)),
+        prev.map((m) => (m.id === messageId ? { ...m, folder: 'archive' as const } : m)),
       )
     },
     [emails, useLiveMail, mailApiBase, loadLiveMailbox],
   )
 
   const archiveToolbar = useCallback(async () => {
-    const inboxIds = toolbarTargetIds.filter((id) => emails.find((m) => m.id === id)?.folder === 'inbox')
-    if (inboxIds.length === 0) return
+    const archiveIds = toolbarTargetIds.filter((id) => {
+      const msg = emails.find((m) => m.id === id)
+      return msg && msg.folder !== 'archive'
+    })
+    if (archiveIds.length === 0) return
     if (useLiveMail && mailApiBase) {
       const session = getSession()
       if (!session) return
       try {
         const token = getBearerTokenForApi(session)
-        await Promise.all(inboxIds.map((id) => moveMailMessage(mailApiBase, token, id, 'trash')))
+        await Promise.all(archiveIds.map((id) => moveMailMessage(mailApiBase, token, id, 'archive')))
         await loadLiveMailbox()
       } catch (e) {
         setMailLoadError(e instanceof Error ? e.message : 'Archive failed')
@@ -1398,7 +1475,7 @@ export function MailDashboard({
       return
     }
     setEmails((prev) =>
-      prev.map((m) => (inboxIds.includes(m.id) ? { ...m, folder: 'trash' as const } : m)),
+      prev.map((m) => (archiveIds.includes(m.id) ? { ...m, folder: 'archive' as const } : m)),
     )
     setBulkSelectedIds(new Set())
   }, [toolbarTargetIds, emails, useLiveMail, mailApiBase, loadLiveMailbox])
@@ -1492,7 +1569,6 @@ export function MailDashboard({
       { value: 'sent', label: 'Sent' },
       { value: 'drafts', label: 'Drafts' },
       { value: 'spam', label: 'Spam' },
-      { value: 'trash', label: 'Trash' },
     ]
     const custom = userFolders.map((uf) => ({
       value: customFolderKey(uf.id),
@@ -1530,7 +1606,7 @@ export function MailDashboard({
   const deleteUserFolder = useCallback(
     async (uf: UserFolder) => {
       const key = customFolderKey(uf.id)
-      const n = emails.filter((m) => m.folder === key).length
+      const n = useLiveMail ? counts[key] ?? 0 : emails.filter((m) => m.folder === key).length
       const ok = window.confirm(
         n > 0
           ? `Delete folder “${uf.name}” and move ${n} message(s) to Inbox?`
@@ -1555,15 +1631,17 @@ export function MailDashboard({
       setUserFolders((prev) => prev.filter((f) => f.id !== uf.id))
       if (folder === key) setFolder('inbox')
     },
-    [emails, folder, useLiveMail, mailApiBase, loadLiveMailbox],
+    [emails, counts, folder, useLiveMail, mailApiBase, loadLiveMailbox],
   )
 
   const resetCompose = useCallback(() => {
     setComposeTo('')
     setComposeCc('')
     setComposeBcc('')
+    setComposeExpanded(false)
     setComposeSubject('')
     setComposeBody('')
+    setComposeQuote(null)
     setComposeFiles([])
     setComposeShowCcBcc(false)
     setComposeError(null)
@@ -1594,7 +1672,8 @@ export function MailDashboard({
         cc: composeCc.trim() || undefined,
         bcc: composeBcc.trim() || undefined,
         subject: composeSubject.trim(),
-        body: composeBody,
+        body: `${composeBody || '<p></p>'}${composeQuote?.html ?? ''}`,
+        inlineImages: composeQuote?.inlineImages,
         attachments,
       }
       const approx = new Blob([JSON.stringify(payload)]).size
@@ -1618,6 +1697,7 @@ export function MailDashboard({
     composeBcc,
     composeSubject,
     composeBody,
+    composeQuote,
     composeFiles,
     useLiveMail,
     mailApiBase,
@@ -1630,35 +1710,22 @@ export function MailDashboard({
     setComposeOpen(true)
   }, [resetCompose])
 
-  const openReply = useCallback(() => {
-    if (!selected) return
-    resetCompose()
-    setComposeTo(selected.from.email || '')
-    const subj = selected.subject.trim()
-    setComposeSubject(subj.toLowerCase().startsWith('re:') ? subj : `Re: ${subj}`)
-    const plain = looksLikeHtmlBody(selected.body, selected.bodyIsHtml)
-      ? stripHtml(selected.body)
-      : selected.body
-    setComposeBody(
-      `\n\n---\nOn ${formatFullDate(selected.sentAt)}, ${selected.from.name} wrote:\n${plain.slice(0, 8000)}`,
-    )
-    setComposeOpen(true)
-  }, [selected, resetCompose])
-
-  const openForward = useCallback(() => {
-    if (!selected) return
-    resetCompose()
-    setComposeTo('')
-    const subj = selected.subject.trim()
-    setComposeSubject(subj.toLowerCase().startsWith('fwd:') ? subj : `Fwd: ${subj}`)
-    const plain = looksLikeHtmlBody(selected.body, selected.bodyIsHtml)
-      ? stripHtml(selected.body)
-      : selected.body
-    setComposeBody(
-      `\n\n---------- Forwarded message ----------\nFrom: ${selected.from.name} <${selected.from.email}>\nDate: ${formatFullDate(selected.sentAt)}\nSubject: ${selected.subject}\n\n${plain.slice(0, 12000)}`,
-    )
-    setComposeOpen(true)
-  }, [selected, resetCompose])
+  const openQuotedCompose = useCallback(async (mode: 'reply' | 'forward') => {
+    if (!selected || quoteBusy || contentBusyId === selected.id) return
+    setQuoteBusy(true)
+    try {
+      const quote = await prepareMailQuote(selected, mode)
+      resetCompose()
+      setComposeTo(mode === 'reply' ? selected.from.email || '' : '')
+      const subject = selected.subject.trim()
+      const prefix = mode === 'reply' ? 'Re:' : 'Fwd:'
+      setComposeSubject(subject.toLowerCase().startsWith(prefix.toLowerCase()) ? subject : `${prefix} ${subject}`)
+      setComposeQuote(quote)
+      setComposeOpen(true)
+    } catch (error) {
+      setMailLoadError(error instanceof Error ? error.message : 'Could not prepare quoted message')
+    } finally { setQuoteBusy(false) }
+  }, [selected, quoteBusy, contentBusyId, resetCompose])
 
   const openAttachment = useCallback((name: string, contentType?: string, contentBase64?: string) => {
     if (!contentBase64) {
@@ -1729,7 +1796,7 @@ export function MailDashboard({
           {trustedDomainsSyncError}
         </div>
       ) : null}
-      <header className="cm-topbar" role="banner">
+      <header ref={topbarRef} className="cm-topbar" role="banner">
         <div className="cm-topbar__left">
           <button
             type="button"
@@ -1769,15 +1836,6 @@ export function MailDashboard({
         </div>
 
         <div className="cm-topbar__right">
-          {useLiveMail && mailLoading ? (
-            <span
-              className="cm-toolbar__meta"
-              style={{ marginRight: '0.35rem' }}
-              aria-live="polite"
-            >
-              Loading…
-            </span>
-          ) : null}
           <button
             type="button"
             className="cm-icon-btn"
@@ -1808,9 +1866,9 @@ export function MailDashboard({
           >
             <IconSettings className="cm-icon" />
           </button>
-          <button type="button" className="cm-avatar" aria-label="Account menu" title="Account">
-            <span className="cm-avatar__initials">OP</span>
-          </button>
+          <div className="cm-avatar" title={currentEmail ?? 'Account'}>
+            <span className="cm-avatar__name">{accountDisplayName.trim() || currentEmail?.split('@')[0] || 'Account'}</span>
+          </div>
           {onLogout ? (
             <button type="button" className="cm-btn cm-btn--ghost cm-topbar__logout" onClick={onLogout}>
               Sign out
@@ -1944,7 +2002,9 @@ export function MailDashboard({
               </nav>
             </div>
 
-            <div className="cm-sidebar__footer" />
+            <div className="cm-sidebar__footer">
+              {onLogout ? <button type="button" className="cm-sidebar__logout" onClick={onLogout}>Sign out</button> : null}
+            </div>
           </div>
         </aside>
 
@@ -1958,14 +2018,17 @@ export function MailDashboard({
         ) : null}
 
         <section
-          ref={(el) => {
-            panesRef.current = el
-          }}
-          className={`cm-panes ${mobileShowDetail ? 'cm-panes--detail' : ''}`}
+          ref={workspaceRef}
+          className={`cm-panes ${selected ? 'cm-panes--detail' : ''}`}
           aria-label="Mail content"
-          style={{ '--cm-list-pane-width': `${listWidth}px` } as CSSProperties}
         >
           <div className="cm-list-pane">
+            <div className="cm-mailbox-head">
+              <div><h1>{debouncedSearch ? 'Search results' : SYSTEM_NAV.find((item) => item.id === folder)?.label ?? userFolders.find((item) => customFolderKey(item.id) === folder)?.name ?? 'Mail'}</h1>
+                {debouncedSearch ? <p>Results for “{debouncedSearch}”</p> : null}
+              </div>
+              <span className="cm-mailbox-head__count">{totalMessages.toLocaleString()} {debouncedSearch ? 'results' : 'messages'}</span>
+            </div>
             <div className="cm-toolbar">
               <label className="cm-toolbar__check">
                 <input
@@ -1983,17 +2046,22 @@ export function MailDashboard({
                   type="button"
                   className="cm-toolbar__btn"
                   title="Show only unread messages"
+                  aria-pressed={showUnreadOnly}
                   onClick={() => setShowUnreadOnly((v) => !v)}
                 >
                   <span className="cm-toolbar__btn-text">{showUnreadOnly ? 'All mail' : 'Unread only'}</span>
                 </button>
+                {toolbarTargetIds.length > 0 ? <>
                 <button
                   type="button"
                   className="cm-toolbar__btn"
-                  title="Archive (move to Trash from Inbox)"
+                  title="Move to Archive"
                   disabled={
                     !toolbarTargetIds.some(
-                      (id) => emails.find((m) => m.id === id)?.folder === 'inbox',
+                      (id) => {
+                        const msg = emails.find((m) => m.id === id)
+                        return msg && msg.folder !== 'archive'
+                      },
                     )
                   }
                   onClick={() => void archiveToolbar()}
@@ -2060,15 +2128,25 @@ export function MailDashboard({
                     </select>
                   </label>
                 ) : null}
+                </> : null}
               </div>
-              <span className="cm-toolbar__meta">
-                {bulkSelectedIds.size > 0
-                  ? `${bulkSelectedIds.size} selected`
-                  : `${listEmails.length} conversation${listEmails.length === 1 ? '' : 's'}`}
-              </span>
+              {debouncedSearch ? <div className="cm-search-options">
+                <select aria-label="Search scope" value={searchScope} onChange={(e) => setSearchScope(e.target.value as 'all' | 'folder')}>
+                  <option value="all">All mail</option><option value="folder">This folder</option>
+                </select>
+                {searchScope === 'all' ? <label><input type="checkbox" checked={includeExcluded} onChange={(e) => setIncludeExcluded(e.target.checked)} /> Include Spam &amp; Trash</label> : null}
+              </div> : null}
+              <div className="cm-pagination" aria-label="Message pagination">
+                <span className="cm-toolbar__meta" aria-live="polite">
+                  {bulkSelectedIds.size ? `${bulkSelectedIds.size} selected · ` : ''}
+                  {pageStart}–{pageEnd} / {totalMessages} {debouncedSearch ? 'results' : 'messages'}
+                </span>
+                <button type="button" className="cm-icon-btn" aria-label="Previous page" disabled={mailLoading || pageIndex === 0} onClick={() => changePage(-1)}><IconChevronLeft className="cm-icon" /></button>
+                <button type="button" className="cm-icon-btn" aria-label="Next page" disabled={mailLoading || (useLiveMail ? !pageData?.nextCursor : pageEnd >= totalMessages)} onClick={() => changePage(1)}><IconChevronLeft className="cm-icon cm-icon--next" /></button>
+              </div>
             </div>
 
-            <ul className="cm-list" role="listbox" aria-label="Messages">
+            <ul ref={listRef} className="cm-list" aria-busy={mailLoading} role="listbox" aria-label="Messages">
               {listEmails.map((m) => (
                 <li key={m.id} role="none">
                   <div
@@ -2093,7 +2171,9 @@ export function MailDashboard({
                       type="button"
                       className="cm-row__star"
                       aria-label={m.starred ? 'Remove star' : 'Star'}
-                      onClick={(e) => toggleStar(m.id, e)}
+                      disabled={starPendingIds.has(m.id)}
+                      aria-pressed={m.starred}
+                      onClick={(e) => void toggleStar(m.id, e)}
                     >
                       <IconStar
                         className={`cm-icon cm-row__star-icon ${m.starred ? 'cm-row__star-icon--on' : ''}`}
@@ -2145,20 +2225,6 @@ export function MailDashboard({
             ) : null}
           </div>
 
-          <div
-            className="cm-splitter"
-            role="separator"
-            aria-label="Resize message list"
-            aria-orientation="vertical"
-            tabIndex={0}
-            onPointerDown={beginResize}
-            onKeyDown={(e) => {
-              const step = e.shiftKey ? 24 : 12
-              if (e.key === 'ArrowLeft') setListWidth((w) => Math.max(280, w - step))
-              if (e.key === 'ArrowRight') setListWidth((w) => w + step)
-            }}
-          />
-
           <div className="cm-read-pane">
             {selected ? (
               <>
@@ -2167,11 +2233,24 @@ export function MailDashboard({
                     type="button"
                     className="cm-read__back cm-icon-btn cm-icon-btn--ghost"
                     aria-label="Back to list"
-                    onClick={goBackMobile}
+                    onClick={goBackToList}
                   >
                     <IconChevronLeft className="cm-icon" />
                   </button>
                   <div className="cm-read__bar-actions">
+                    <button type="button" className="cm-icon-btn"
+                      title={selected.starred ? 'Remove star' : 'Star'}
+                      aria-label={selected.starred ? 'Remove star' : 'Star'}
+                      aria-pressed={selected.starred}
+                      disabled={starPendingIds.has(selected.id)}
+                      onClick={() => void toggleStar(selected.id)}>
+                      <IconStar className={`cm-icon cm-row__star-icon ${selected.starred ? 'cm-row__star-icon--on' : ''}`} />
+                    </button>
+                    <button type="button" className="cm-icon-btn" title="Print / Download PDF"
+                      aria-label="Download email PDF" disabled={pdfBusy || contentBusyId === selected.id || !selected.body}
+                      onClick={() => void exportSelectedPdf()}>
+                      <IconPrint className="cm-icon" />
+                    </button>
                     <label className="cm-read__move">
                       <IconMove className="cm-icon" />
                       <select
@@ -2195,9 +2274,9 @@ export function MailDashboard({
                     <button
                       type="button"
                       className="cm-icon-btn"
-                      title="Archive (from Inbox only)"
-                      disabled={selected.folder !== 'inbox'}
-                      onClick={() => void archiveFromInbox(selected.id)}
+                      title="Move to Archive"
+                      disabled={selected.folder === 'archive'}
+                      onClick={() => void archiveMessage(selected.id)}
                     >
                       <IconArchive className="cm-icon" />
                     </button>
@@ -2314,21 +2393,13 @@ export function MailDashboard({
                     ) : null}
                   </header>
                   <div className="cm-read__actions" role="toolbar" aria-label="Message actions">
-                    <button type="button" className="cm-read__action-btn" onClick={() => openReply()}>
+                    <button type="button" className="cm-read__action-btn" disabled={quoteBusy || contentBusyId === selected.id} onClick={() => void openQuotedCompose('reply')}>
                       <IconReply className="cm-icon" />
                       Reply
                     </button>
-                    <button type="button" className="cm-read__action-btn" onClick={() => openForward()}>
+                    <button type="button" className="cm-read__action-btn" disabled={quoteBusy || contentBusyId === selected.id} onClick={() => void openQuotedCompose('forward')}>
                       <IconForward className="cm-icon" />
                       Forward
-                    </button>
-                    <button
-                      type="button"
-                      className="cm-read__action-btn cm-read__action-btn--danger"
-                      onClick={() => void deleteOrTrashMessage(selected.id)}
-                    >
-                      <IconTrash className="cm-icon" />
-                      {selected.folder === 'trash' ? 'Delete permanently' : 'Trash'}
                     </button>
                   </div>
                   </div>
@@ -2390,12 +2461,20 @@ export function MailDashboard({
       </div>
 
       {composeOpen ? (
-        <div className="cm-compose-modal" role="dialog" aria-modal="true" aria-labelledby="cm-compose-title">
-          <div className="cm-compose-modal__panel">
+        <div className={`cm-compose-modal ${composeExpanded ? 'cm-compose-modal--expanded' : ''}`} style={composeExpanded ? composeBounds : undefined} role="dialog" aria-modal="true" aria-labelledby="cm-compose-title">
+          <div className={`cm-compose-modal__panel ${composeQuote ? 'cm-compose-modal__panel--quoted' : ''}`}>
             <div className="cm-compose-modal__head">
-              <h2 id="cm-compose-title" className="cm-compose-modal__title">
-                New message
-              </h2>
+              <div className="cm-compose-modal__heading">
+                <span className="cm-compose-modal__badge"><IconCompose className="cm-icon" /></span>
+                <h2 id="cm-compose-title" className="cm-compose-modal__title">New message</h2>
+              </div>
+              <div className="cm-compose-modal__window-actions">
+                <button type="button" className="cm-icon-btn cm-compose-expand"
+                  aria-label={composeExpanded ? 'Restore compose size' : 'Expand compose'}
+                  title={composeExpanded ? 'Restore size' : 'Expand to mailbox'}
+                  aria-pressed={composeExpanded} onClick={() => setComposeExpanded((value) => !value)}>
+                  {composeExpanded ? <IconCollapse className="cm-icon" /> : <IconExpand className="cm-icon" />}
+                </button>
               <button
                 type="button"
                 className="cm-icon-btn"
@@ -2407,6 +2486,7 @@ export function MailDashboard({
               >
                 <IconClose className="cm-icon" />
               </button>
+              </div>
             </div>
             <div className="cm-compose-modal__fields">
               <label className="cm-field">
@@ -2470,9 +2550,9 @@ export function MailDashboard({
                       className="cm-attach-zone__input"
                       multiple
                       onChange={(e) => {
-                        const list = e.target.files
-                        if (!list?.length) return
-                        setComposeFiles((prev) => [...prev, ...Array.from(list)])
+                        const files = Array.from(e.target.files ?? [])
+                        if (!files.length) return
+                        setComposeFiles((prev) => [...prev, ...files])
                         e.target.value = ''
                       }}
                     />
@@ -2517,6 +2597,12 @@ export function MailDashboard({
                     theme={theme}
                   />
                 </Suspense>
+                {composeQuote ? <div className="cm-compose-quote">
+                  <div className="cm-compose-quote__bar"><span>Original message</span>
+                    <button type="button" className="cm-btn cm-btn--ghost cm-btn--sm" onClick={() => setComposeQuote(null)}>Remove quoted message</button>
+                  </div>
+                  <EmailHtmlIframe html={composeQuote.html} dark={false} loadInlineImages={allowInlineImages} inlineImages={composeQuote.inlineImages} />
+                </div> : null}
               </div>
             </div>
             <div className="cm-compose-modal__foot">
@@ -2531,6 +2617,7 @@ export function MailDashboard({
                 disabled={composeSending}
                 onClick={() => void submitCompose()}
               >
+                <IconSend className="cm-icon cm-icon--sm" />
                 {composeSending ? 'Sending…' : 'Send'}
               </button>
               <button
