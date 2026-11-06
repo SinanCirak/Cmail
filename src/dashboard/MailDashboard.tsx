@@ -751,7 +751,7 @@ export function MailDashboard({
   const [pageData, setPageData] = useState<MailboxPage | null>(null)
   const [pagination, setPagination] = useState<{ key: string; cursors: (string | null)[]; index: number }>({ key: '', cursors: [null], index: 0 })
   const loadVersion = useRef(0)
-  const reloadMailboxRef = useRef<(() => Promise<void>) | null>(null)
+  const reloadMailboxRef = useRef<((opts?: { silent?: boolean }) => Promise<void>) | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const [showUnreadOnly, setShowUnreadOnly] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
@@ -764,6 +764,8 @@ export function MailDashboard({
   const [starPendingIds, setStarPendingIds] = useState<Set<string>>(() => new Set())
   const starPending = useRef(new Map<string, boolean>())
   const starOverrides = useRef(new Map<string, MailMessage>())
+  const [starCountOverride, setStarCountOverride] = useState<number | null>(null)
+  const starCountRef = useRef<number | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const sessionInvalid = mailLoadError?.includes('Session expired or invalid') ?? false
 
@@ -873,7 +875,7 @@ export function MailDashboard({
   }, [queryKey, cursor])
 
   const counts = useMemo(() => {
-    if (useLiveMail) return pageData?.counts ?? {}
+    if (useLiveMail) return { ...pageData?.counts, starred: starCountOverride ?? pageData?.counts.starred ?? 0 }
     const c: Record<string, number> = { starred: 0 }
     for (const m of emails) {
       c[m.folder] = (c[m.folder] ?? 0) + 1
@@ -882,7 +884,7 @@ export function MailDashboard({
       }
     }
     return c
-  }, [emails, useLiveMail, pageData])
+  }, [emails, useLiveMail, pageData, starCountOverride])
 
   type ListMailRow = MailMessage & { threadCount?: number; threadIds?: string[] }
   const filteredDemoEmails = useMemo(() => {
@@ -895,11 +897,15 @@ export function MailDashboard({
   }, [useLiveMail, emails, debouncedSearch, searchScope, includeExcluded, folder, showUnreadOnly])
   const listEmails = useMemo<ListMailRow[]>(() => {
     const source = useLiveMail ? emails : filteredDemoEmails.slice(pageIndex * 25, (pageIndex + 1) * 25)
-    return source.map((msg) => ({ ...msg, threadCount: 1, threadIds: [msg.id] }))
-  }, [useLiveMail, emails, filteredDemoEmails, pageIndex])
-  const totalMessages = useLiveMail ? pageData?.total ?? 0 : filteredDemoEmails.length
-  const pageStart = useLiveMail ? pageData?.start ?? 0 : totalMessages ? pageIndex * 25 + 1 : 0
-  const pageEnd = useLiveMail ? pageData?.end ?? 0 : Math.min((pageIndex + 1) * 25, totalMessages)
+    const visible = useLiveMail && folder === 'starred' && !(debouncedSearch && searchScope === 'all')
+      ? source.filter((m) => m.starred && m.folder !== 'spam' && m.folder !== 'trash') : source
+    return visible.map((msg) => ({ ...msg, threadCount: 1, threadIds: [msg.id] }))
+  }, [useLiveMail, emails, filteredDemoEmails, pageIndex, folder, debouncedSearch, searchScope])
+  const totalMessages = useLiveMail
+    ? folder === 'starred' && !debouncedSearch && !showUnreadOnly ? counts.starred ?? 0 : pageData?.total ?? 0
+    : filteredDemoEmails.length
+  const pageStart = useLiveMail ? listEmails.length ? pageData?.start || 1 : 0 : totalMessages ? pageIndex * 25 + 1 : 0
+  const pageEnd = useLiveMail ? listEmails.length ? pageStart + listEmails.length - 1 : 0 : Math.min((pageIndex + 1) * 25, totalMessages)
   const changePage = (direction: -1 | 1) => {
     setPagination((prev) => {
       const cursors = prev.key === queryKey ? [...prev.cursors] : [null]
@@ -1121,6 +1127,12 @@ export function MailDashboard({
     const starred = !msg.starred
     const session = getSession()
     if (useLiveMail && !session) return
+    const countDelta = msg.folder === 'spam' || msg.folder === 'trash' ? 0 : starred ? 1 : -1
+    if (useLiveMail) {
+      starCountRef.current = Math.max(0, (starCountRef.current ?? pageData?.counts.starred ?? 0) + countDelta)
+      setStarCountOverride(starCountRef.current)
+    }
+    const previousChoice = starOverrides.current.get(id)
     starOverrides.current.set(id, { ...msg, starred })
     starPending.current.set(id, starred)
     setStarPendingIds(new Set(starPending.current.keys()))
@@ -1128,17 +1140,22 @@ export function MailDashboard({
     try {
       if (useLiveMail && mailApiBase && session) {
         await setMailStarred(mailApiBase, getBearerTokenForApi(session), id, starred)
-        await reloadMailboxRef.current?.()
+        void reloadMailboxRef.current?.({ silent: true })
       }
     } catch (error) {
-      starOverrides.current.delete(id)
+      if (previousChoice) starOverrides.current.set(id, previousChoice)
+      else starOverrides.current.delete(id)
+      if (useLiveMail) {
+        starCountRef.current = Math.max(0, (starCountRef.current ?? pageData?.counts.starred ?? 0) - countDelta)
+        setStarCountOverride(starCountRef.current)
+      }
       setEmails((prev) => prev.map((m) => m.id === id ? { ...m, starred: msg.starred } : m))
       setMailLoadError(error instanceof Error ? error.message : 'Could not update star')
     } finally {
       starPending.current.delete(id)
       setStarPendingIds(new Set(starPending.current.keys()))
     }
-  }, [emails, useLiveMail, mailApiBase])
+  }, [emails, useLiveMail, mailApiBase, pageData])
 
   const exportSelectedPdf = useCallback(async () => {
     if (!selected || pdfBusy) return
@@ -1219,6 +1236,11 @@ export function MailDashboard({
         return
       }
       setUserFolders(folders)
+      // Do not replace the immediate sidebar count with a delayed index snapshot.
+      if (!starPending.current.size && starCountRef.current === (data.counts.starred ?? 0)) {
+        starCountRef.current = null
+        setStarCountOverride(null)
+      }
       const effectiveFolder = debouncedSearch && searchScope === 'all' ? 'all' : folder
       // A successful write can reach this view before the stream updates its index.
       // Keep the user's choice until an unfiltered Starred response confirms it.
