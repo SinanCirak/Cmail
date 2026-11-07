@@ -1,41 +1,74 @@
 import { useRef, useState } from 'react'
 import type { UserFolder } from '../types/mail'
+import type { FolderRuleBatch } from '../mail/mailApi'
+import { parseSenderRules } from '../mail/senderRules'
 
 type Props = {
   folders: UserFolder[]
   onSave: (id: string, senders: string[]) => Promise<UserFolder>
+  onApply: (id: string, cursor: string | null, senders: string[]) => Promise<FolderRuleBatch>
 }
 
-function FolderSenderEditor({ folder, onSave, onBusy }: {
+function FolderSenderEditor({ folder, onSave, onApply, onBusy }: {
   folder: UserFolder
   onSave: Props['onSave']
+  onApply: Props['onApply']
   onBusy: (busy: boolean) => void
 }) {
-  const [text, setText] = useState(() => (folder.senders ?? []).join('\n'))
+  const serverText = (folder.senders ?? []).join('\n')
+  const [draft, setDraft] = useState<string | null>(null)
+  const text = draft ?? serverText
   const [busy, setBusy] = useState(false)
   const running = useRef(false)
   const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
+  const [savedRules, setSavedRules] = useState<string | null>(null)
+  const [applyExisting, setApplyExisting] = useState(false)
+  const [progress, setProgress] = useState<string | null>(null)
+  const migration = useRef<{ cursor: string | null; moved: number; senders: string[] } | null>(null)
 
   async function save() {
     if (running.current) return
-    const senders = [...new Set(text.split(/[\s,;]+/).filter(Boolean).map((address) => address.toLowerCase()))]
-    if (senders.length > 20 || senders.some((address) => !/^[^\s@<>*]+@[^\s@<>*]+\.[^\s@<>*]+$/.test(address))) {
-      setSaved(false)
-      setError('Enter up to 20 complete email addresses, separated by commas or new lines.')
+    let senders: string[]
+    try { senders = parseSenderRules(text) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Invalid sender rules.'); return }
+    if (applyExisting && !senders.length) {
+      setError('Add a rule before applying it to existing Inbox messages.')
       return
     }
     running.current = true
     setBusy(true)
     onBusy(true)
     setError(null)
-    setSaved(false)
+    setSavedRules(null)
+    if (!migration.current) setProgress(null)
     try {
-      const updated = await onSave(folder.id, senders)
-      setText((updated.senders ?? []).join('\n'))
-      setSaved(true)
+      if (!migration.current) {
+        const updated = await onSave(folder.id, senders)
+        senders = updated.senders ?? []
+        setDraft(null)
+        if (applyExisting) migration.current = { cursor: null, moved: 0, senders }
+      }
+      const job = migration.current
+      if (job) {
+        let complete = false
+        while (!complete) {
+          setProgress(`Checking Inbox… ${job.moved} moved`)
+          const batch = await onApply(folder.id, job.cursor, job.senders)
+          job.moved += batch.moved
+          job.cursor = batch.nextCursor
+          setProgress(`Checking Inbox… ${job.moved} moved`)
+          if (batch.error) throw new Error(batch.error)
+          complete = batch.complete
+        }
+        senders = job.senders
+        setProgress(`Finished: ${job.moved} messages moved to this folder.`)
+        migration.current = null
+        setApplyExisting(false)
+      }
+      setSavedRules(senders.join('\n'))
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save sender rules.')
+      const message = e instanceof Error ? e.message : 'Could not save sender rules.'
+      setError(migration.current ? `Rules were saved, but moving existing messages stopped. ${message}` : message)
     } finally {
       running.current = false
       setBusy(false)
@@ -47,25 +80,32 @@ function FolderSenderEditor({ folder, onSave, onBusy }: {
     <label className="cm-field" htmlFor="settings-folder-senders">
       <span className="cm-field__label">Automatically move mail from</span>
       <textarea id="settings-folder-senders" className="cm-field__input cm-folder-rules__addresses"
-        rows={5} maxLength={5200} value={text} disabled={busy} placeholder="jobs@linkedin.com"
-        onChange={(e) => { setText(e.target.value); setError(null); setSaved(false) }} />
+        rows={5} maxLength={5200} value={text} disabled={busy || !!migration.current}
+        placeholder={'jobs@linkedin.com\n@linkedin.com\n*.linkedin.com'}
+        onChange={(e) => { setDraft(e.target.value); setError(null); setSavedRules(null); setProgress(null) }} />
     </label>
-    <p className="cm-settings__note">Use complete email addresses, separated by commas or new lines. Up to 20 addresses per folder.</p>
-    <p className="cm-settings__note">Changes apply to new incoming mail. Existing messages stay in their current folders. Leave this list empty to stop automatic moves.</p>
+    <p className="cm-settings__note">Use an email address, @linkedin.com for that exact domain, or *.linkedin.com for its subdomains. Separate up to 20 rules with commas or new lines.</p>
+    <p className="cm-settings__note">Exact addresses take priority over domain rules. Leave the list empty to stop automatic moves. Existing mail stays in place unless you select the option below.</p>
+    <label className="cm-folder-rules__apply">
+      <input type="checkbox" checked={applyExisting} disabled={busy || !!migration.current}
+        onChange={(e) => { setApplyExisting(e.target.checked); setSavedRules(null) }} />
+      Also move matching messages already in Inbox
+    </label>
+    {progress ? <p role="status" className="cm-settings__note">{progress}</p> : null}
     {error ? <p role="alert" className="cm-alert cm-alert--err">{error}</p> : null}
-    {saved ? <p role="status" className="cm-alert cm-alert--ok">Sender rules saved.</p> : null}
+    {savedRules !== null && savedRules === serverText && draft === null ? <p role="status" className="cm-alert cm-alert--ok">Sender rules saved.</p> : null}
     <div className="cm-settings__actions">
       <button type="button" className="cm-btn cm-btn--primary" disabled={busy} onClick={() => void save()}>
-        {busy ? 'Saving…' : 'Save rules'}
+        {busy ? 'Saving…' : migration.current ? 'Retry moving messages' : 'Save rules'}
       </button>
-      <button type="button" className="cm-btn cm-btn--ghost" disabled={busy} onClick={() => {
-        setText((folder.senders ?? []).join('\n')); setError(null); setSaved(false)
+      <button type="button" className="cm-btn cm-btn--ghost" disabled={busy || !!migration.current} onClick={() => {
+        setDraft(null); setError(null); setSavedRules(null); setProgress(null); setApplyExisting(false)
       }}>Discard</button>
     </div>
   </div>
 }
 
-export function FolderRulesSettings({ folders, onSave }: Props) {
+export function FolderRulesSettings({ folders, onSave, onApply }: Props) {
   const [selectedId, setSelectedId] = useState('')
   const [busy, setBusy] = useState(false)
   const selected = folders.find((folder) => folder.id === selectedId) ?? folders[0]
@@ -80,7 +120,7 @@ export function FolderRulesSettings({ folders, onSave }: Props) {
             {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
           </select>
         </label>
-        <FolderSenderEditor key={selected.id} folder={selected} onSave={onSave} onBusy={setBusy} />
+        <FolderSenderEditor key={selected.id} folder={selected} onSave={onSave} onApply={onApply} onBusy={setBusy} />
       </> : <p className="cm-settings__note">Create a folder from “Your folders” to add automatic sender rules.</p>}
     </section>
     <section className="cm-settings__section cm-folder-rules__deletion">

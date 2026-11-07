@@ -21,6 +21,7 @@ import { mockEmails } from '../data/mockEmails'
 import {
   addTrustedImageDomainApi,
   applyFolderSenderRule,
+  type FolderRuleBatch,
   updateFolderSenders,
   createUserFolderApi,
   deleteMailMessage,
@@ -45,6 +46,7 @@ import { customFolderKey } from '../types/mail'
 import { EmailHtmlIframe } from './EmailHtmlIframe'
 import { FolderRulesSettings } from './FolderRulesSettings'
 import { SidebarResizeHandle } from './SidebarResizeHandle'
+import { parseSenderRules, findSenderRuleFolder } from '../mail/senderRules'
 
 const ComposeRichEditor = lazy(() =>
   import('./ComposeRichEditor').then((m) => ({ default: m.ComposeRichEditor })),
@@ -240,6 +242,7 @@ function SettingsModal(props: {
   trustedDomainsSyncError: string | null
   userFolders: UserFolder[]
   onSaveFolderSenders: (id: string, senders: string[]) => Promise<UserFolder>
+  onApplyFolderRule: (id: string, cursor: string | null, senders: string[]) => Promise<FolderRuleBatch>
 }) {
   const {
     open,
@@ -256,6 +259,7 @@ function SettingsModal(props: {
     trustedDomainsSyncError,
     userFolders,
     onSaveFolderSenders,
+    onApplyFolderRule,
   } = props
   const [tab, setTab] = useState<SettingsTab>('account')
   const [displayName, setDisplayName] = useState('')
@@ -423,7 +427,7 @@ function SettingsModal(props: {
             </button>
           </div>
 
-          {tab === 'folders' ? <FolderRulesSettings folders={userFolders} onSave={onSaveFolderSenders} /> : null}
+          {tab === 'folders' ? <FolderRulesSettings folders={userFolders} onSave={onSaveFolderSenders} onApply={onApplyFolderRule} /> : null}
 
           {tab === 'account' ? (
             <div className="cm-settings">
@@ -765,6 +769,7 @@ export function MailDashboard({
   const [pageData, setPageData] = useState<MailboxPage | null>(null)
   const [pagination, setPagination] = useState<{ key: string; cursors: (string | null)[]; index: number }>({ key: '', cursors: [null], index: 0 })
   const loadVersion = useRef(0)
+  const folderWriteVersion = useRef(0)
   const reloadMailboxRef = useRef<((opts?: { silent?: boolean }) => Promise<void>) | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const [showUnreadOnly, setShowUnreadOnly] = useState(false)
@@ -1264,6 +1269,7 @@ export function MailDashboard({
     }
     try {
       const token = getBearerTokenForApi(session)
+      const foldersVersion = folderWriteVersion.current
       const [data, folders] = await Promise.all([
         fetchMailboxPage(mailApiBase, token, {
           folder: debouncedSearch && searchScope === 'all' ? 'all' : folder,
@@ -1276,7 +1282,7 @@ export function MailDashboard({
         setPagination((prev) => ({ ...prev, index: Math.max(0, prev.index - 1) }))
         return
       }
-      setUserFolders(folders)
+      if (foldersVersion === folderWriteVersion.current) setUserFolders(folders)
       // Do not replace the immediate sidebar count with a delayed index snapshot.
       if (!starPending.current.size && starCountRef.current === (data.counts.starred ?? 0)) {
         starCountRef.current = null
@@ -1671,12 +1677,10 @@ export function MailDashboard({
   const createFolderQuick = useCallback(async () => {
     if (newFolderRunning.current) return
     const name = newFolderName.trim()
-    const senders = [...new Set(newFolderSenders.split(/[\s,;]+/).filter(Boolean).map((s) => s.toLowerCase()))]
+    let senders: string[]
     if (!name) return
-    if (senders.length > 20 || senders.some((s) => !/^[^\s@<>*]+@[^\s@<>*]+\.[^\s@<>*]+$/.test(s))) {
-      setNewFolderError('Enter up to 20 complete email addresses, separated by commas or new lines.')
-      return
-    }
+    try { senders = parseSenderRules(newFolderSenders) }
+    catch (e) { setNewFolderError(e instanceof Error ? e.message : 'Invalid sender rules.'); return }
     if (newFolderApplyExisting && !senders.length) {
       setNewFolderError('Add a sender address to apply this rule to existing Inbox messages.')
       return
@@ -1711,7 +1715,7 @@ export function MailDashboard({
         created = { id: crypto.randomUUID(), name, senders }
         setUserFolders((prev) => [...prev, created])
         if (newFolderApplyExisting) {
-          setEmails((prev) => prev.map((m) => m.folder === 'inbox' && senders.includes(m.from.email.toLowerCase())
+          setEmails((prev) => prev.map((m) => m.folder === 'inbox' && findSenderRuleFolder([...userFolders, created], m.from.email)?.id === created.id
             ? { ...m, folder: customFolderKey(created.id) } : m))
         }
       }
@@ -1730,25 +1734,46 @@ export function MailDashboard({
       newFolderRunning.current = false
       setNewFolderBusy(false)
     }
-  }, [newFolderName, newFolderSenders, newFolderApplyExisting, useLiveMail, mailApiBase])
+  }, [newFolderName, newFolderSenders, newFolderApplyExisting, useLiveMail, mailApiBase, userFolders])
 
   const saveFolderSenders = useCallback(async (id: string, senders: string[]): Promise<UserFolder> => {
     const existing = userFolders.find((folder) => folder.id === id)
     if (!existing) throw new Error('Folder not found. Refresh and retry.')
-    let updated: UserFolder
+    folderWriteVersion.current += 1
+    try {
+      let updated: UserFolder
+      if (useLiveMail && mailApiBase) {
+        const session = getSession()
+        if (!session) throw new Error('Please sign in again.')
+        updated = await updateFolderSenders(mailApiBase, getBearerTokenForApi(session), id, senders)
+        if (!Array.isArray(updated.senders) || updated.senders.length !== senders.length || senders.some((rule) => !updated.senders?.includes(rule))) {
+          throw new Error('Could not confirm the saved rules. Refresh and retry.')
+        }
+      } else {
+        if (userFolders.some((folder) => folder.id !== id && folder.senders?.some((rule) => senders.includes(rule)))) {
+          throw new Error('A sender rule is already linked to another folder.')
+        }
+        updated = { ...existing, senders }
+      }
+      setUserFolders((prev) => prev.map((folder) => folder.id === id ? updated : folder))
+      return updated
+    } finally { folderWriteVersion.current += 1 }
+  }, [userFolders, useLiveMail, mailApiBase])
+
+  const applyExistingFolderRule = useCallback(async (id: string, cursor: string | null, senders: string[]): Promise<FolderRuleBatch> => {
     if (useLiveMail && mailApiBase) {
       const session = getSession()
       if (!session) throw new Error('Please sign in again.')
-      updated = await updateFolderSenders(mailApiBase, getBearerTokenForApi(session), id, senders)
-    } else {
-      if (userFolders.some((folder) => folder.id !== id && folder.senders?.some((address) => senders.includes(address)))) {
-        throw new Error('A sender is already linked to another folder.')
-      }
-      updated = { ...existing, senders }
+      const batch = await applyFolderSenderRule(mailApiBase, getBearerTokenForApi(session), id, cursor)
+      if (batch.complete && !batch.error) void reloadMailboxRef.current?.({ silent: true })
+      return batch
     }
-    setUserFolders((prev) => prev.map((folder) => folder.id === id ? updated : folder))
-    return updated
-  }, [userFolders, useLiveMail, mailApiBase])
+    const folders = userFolders.map((folder) => folder.id === id ? { ...folder, senders } : folder)
+    const matching = new Set(emails.filter((message) => message.folder === 'inbox'
+      && findSenderRuleFolder(folders, message.from.email)?.id === id).map((message) => message.id))
+    setEmails((prev) => prev.map((message) => matching.has(message.id) ? { ...message, folder: customFolderKey(id) } : message))
+    return { moved: matching.size, nextCursor: null, complete: true }
+  }, [useLiveMail, mailApiBase, emails, userFolders])
 
   const deleteUserFolder = useCallback(
     async (uf: UserFolder) => {
@@ -2120,7 +2145,7 @@ export function MailDashboard({
                     placeholder="jobs@linkedin.com" value={newFolderSenders}
                     disabled={newFolderBusy || !!newFolderJob.current}
                     onChange={(e) => setNewFolderSenders(e.target.value)} rows={2} maxLength={5200} />
-                  <small className="cm-new-folder__hint">Optional. Exact email addresses, separated by commas or new lines.</small>
+                  <small className="cm-new-folder__hint">Optional: jobs@linkedin.com, @linkedin.com, or *.linkedin.com. Separate rules with commas or new lines.</small>
                   <label className="cm-new-folder__check">
                     <input type="checkbox" checked={newFolderApplyExisting}
                       disabled={newFolderBusy || !!newFolderJob.current}
@@ -2846,6 +2871,7 @@ export function MailDashboard({
         trustedDomainsSyncError={trustedDomainsSyncError}
         userFolders={userFolders}
         onSaveFolderSenders={saveFolderSenders}
+        onApplyFolderRule={applyExistingFolderRule}
       />
     </div>
   )

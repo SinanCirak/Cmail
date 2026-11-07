@@ -120,9 +120,11 @@ export async function updateFolderSenders(
   return res.json()
 }
 
+export type FolderRuleBatch = { moved: number; nextCursor: string | null; complete: boolean; error?: string }
+
 export async function applyFolderSenderRule(
   apiBase: string, token: string, folderId: string, cursor: string | null,
-): Promise<{ moved: number; nextCursor: string | null; complete: boolean; error?: string }> {
+): Promise<FolderRuleBatch> {
   const res = await authenticatedFetch(`${apiBase}/mail/user-folders`, {
     method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'applySenderRule', folderId, cursor }),

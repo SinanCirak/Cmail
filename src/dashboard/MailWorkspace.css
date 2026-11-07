@@ -262,3 +262,6 @@
 @media (max-width: 1024px) {
   .cm-sidebar-resize { display: none; }
 }
+
+.cm-folder-rules__apply { display: flex; align-items: flex-start; gap: .55rem; margin-top: 1rem; font-size: .82rem; line-height: 1.5; color: var(--cm-text); }
+.cm-folder-rules__apply input { margin-top: .2rem; flex-shrink: 0; accent-color: var(--cm-accent); }
