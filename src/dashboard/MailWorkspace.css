@@ -17,7 +17,7 @@
 .cm-avatar__name { line-height: calc(2.25rem - 2px); }
 .cm-topbar__logout { font-size: .8rem; }
 .cm-topbar .cm-topbar__menu { display: none; }
-.cm-sidebar { width: 236px; }
+.cm-sidebar { width: var(--cm-sidebar-width, 280px); }
 .cm-sidebar__inner { padding: 1rem .75rem; gap: 1rem; }
 .cm-compose { border-radius: 12px; background: var(--cm-accent); min-height: 48px; box-shadow: none; }
 .cm-compose:hover { background: var(--cm-accent-strong); box-shadow: 0 4px 12px rgba(0,0,0,.12); }
@@ -247,4 +247,18 @@
   .cm-mailbox-head h1 { font-size: 1rem; }
   .cm-mailbox-head__unread { font-size: .7rem; padding: .2rem .4rem; }
   .cm-row__from::before { margin-right: .35rem; }
+}
+
+/* Keep folder labels and both counters in separate, bounded columns. */
+.cm-nav__item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: .5rem; }
+.cm-nav__counts { min-width: 0; margin-left: 0; gap: .35rem; }
+.cm-nav__unread { min-width: 1.3rem; text-align: center; font-variant-numeric: tabular-nums; }
+.cm-nav__row { min-width: 0; }
+.cm-sidebar-resize { position: relative; flex: 0 0 7px; align-self: stretch; cursor: col-resize; touch-action: none; z-index: 31; }
+.cm-sidebar-resize::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; border-radius: 2px; background: transparent; }
+.cm-sidebar-resize:hover::after, .cm-sidebar-resize:focus-visible::after, .cm-sidebar-resize[data-resizing="true"]::after { background: var(--cm-accent); }
+.cm-sidebar-resize:focus-visible { outline: none; }
+.cm-body:has(.cm-sidebar-resize[data-resizing="true"]) { user-select: none; cursor: col-resize; }
+@media (max-width: 1024px) {
+  .cm-sidebar-resize { display: none; }
 }

@@ -44,6 +44,7 @@ import type { MailFolder, MailMessage, NavFolder, UserFolder } from '../types/ma
 import { customFolderKey } from '../types/mail'
 import { EmailHtmlIframe } from './EmailHtmlIframe'
 import { FolderRulesSettings } from './FolderRulesSettings'
+import { SidebarResizeHandle } from './SidebarResizeHandle'
 
 const ComposeRichEditor = lazy(() =>
   import('./ComposeRichEditor').then((m) => ({ default: m.ComposeRichEditor })),
@@ -772,6 +773,12 @@ export function MailDashboard({
   const [composeBounds, setComposeBounds] = useState<CSSProperties>({})
   const workspaceRef = useRef<HTMLElement>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const stored = Number(localStorage.getItem('cmail-sidebar-width'))
+      return Number.isFinite(stored) && stored >= 240 && stored <= 420 ? stored : 280
+    } catch { return 280 }
+  })
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(() => new Set())
   const [pdfBusy, setPdfBusy] = useState(false)
   const [starPendingIds, setStarPendingIds] = useState<Set<string>>(() => new Set())
@@ -1906,7 +1913,7 @@ export function MailDashboard({
   }, [])
 
   return (
-    <div className={`cm-shell ${theme === 'dark' ? 'cm-shell--dark' : ''}`}>
+    <div className={`cm-shell ${theme === 'dark' ? 'cm-shell--dark' : ''}`} style={{ '--cm-sidebar-width': `${sidebarWidth}px` } as CSSProperties}>
       {mailLoadError ? (
         <div
           className="cm-alert cm-alert--err"
@@ -2019,6 +2026,7 @@ export function MailDashboard({
 
       <div className="cm-body">
         <aside
+          id="cm-folder-sidebar"
           className={`cm-sidebar ${sidebarOpen ? 'cm-sidebar--open' : ''}`}
           aria-label="Mail folders"
         >
@@ -2061,9 +2069,9 @@ export function MailDashboard({
                     }}
                   >
                     <Icon className="cm-nav__icon" />
-                    <span className="cm-nav__label">{label}</span>
+                    <span className="cm-nav__label" title={label}>{label}</span>
                     <span className="cm-nav__counts">
-                      {unread > 0 ? <span className="cm-nav__unread" aria-label={`${unread} unread messages`}>{unread.toLocaleString()} unread</span> : null}
+                      {unread > 0 ? <span className="cm-nav__unread" title={`${unread.toLocaleString()} unread messages`} aria-label={`${unread} unread messages`}>{unread.toLocaleString()}</span> : null}
                       <span className="cm-nav__count" title="Total messages" aria-label={`${total} total messages`}>{total.toLocaleString()}</span>
                     </span>
                   </button>
@@ -2146,9 +2154,9 @@ export function MailDashboard({
                         }}
                       >
                         <IconFolder className="cm-nav__icon" />
-                        <span className="cm-nav__label">{uf.name}</span>
+                        <span className="cm-nav__label" title={uf.name}>{uf.name}</span>
                         <span className="cm-nav__counts">
-                          {(unreadCounts[fid] ?? 0) > 0 ? <span className="cm-nav__unread" aria-label={`${unreadCounts[fid]} unread messages`}>{unreadCounts[fid].toLocaleString()} unread</span> : null}
+                          {(unreadCounts[fid] ?? 0) > 0 ? <span className="cm-nav__unread" title={`${unreadCounts[fid].toLocaleString()} unread messages`} aria-label={`${unreadCounts[fid]} unread messages`}>{unreadCounts[fid].toLocaleString()}</span> : null}
                           <span className="cm-nav__count" title="Total messages" aria-label={`${cnt} total messages`}>{cnt.toLocaleString()}</span>
                         </span>
                       </button>
@@ -2173,6 +2181,7 @@ export function MailDashboard({
             </div>
           </div>
         </aside>
+        <SidebarResizeHandle width={sidebarWidth} onChange={setSidebarWidth} />
 
         {sidebarOpen ? (
           <button

@@ -72,6 +72,38 @@ export function EmailHtmlIframe({
     if (!doc.body) return
     doc.body.innerHTML = resolvedHtml
 
+    // Mail-supplied targets such as _self must never navigate the reader frame.
+    doc.querySelectorAll('base').forEach((base) => base.setAttribute('target', '_blank'))
+    doc.querySelectorAll('meta[http-equiv]').forEach((meta) => {
+      if (meta.getAttribute('http-equiv')?.toLowerCase() === 'refresh') meta.remove()
+    })
+    const prepareLink = (element: Element) => {
+      element.setAttribute('target', '_blank')
+      element.setAttribute('rel', 'noopener noreferrer')
+      element.removeAttribute('download')
+    }
+    doc.querySelectorAll('a, area').forEach(prepareLink)
+    const enforceNewTab = (event: MouseEvent) => {
+      const target = event.target as Element | null
+      const anchor = target?.closest?.('a, area')
+      if (!anchor) return
+      const href = anchor.getAttribute('href') ?? anchor.getAttributeNS('http://www.w3.org/1999/xlink', 'href')
+      if (!href) return
+      try {
+        const url = new URL(href, doc.baseURI)
+        if (!['https:', 'http:', 'mailto:', 'tel:'].includes(url.protocol)) {
+          event.preventDefault()
+          return
+        }
+      } catch {
+        event.preventDefault()
+        return
+      }
+      prepareLink(anchor)
+    }
+    doc.addEventListener('click', enforceNewTab, true)
+    doc.addEventListener('auxclick', enforceNewTab, true)
+
     const syncHeight = () => {
       const h = Math.max(doc.body?.scrollHeight ?? 0, 120)
       iframe.style.height = `${h}px`
@@ -87,6 +119,8 @@ export function EmailHtmlIframe({
     })
 
     return () => {
+      doc.removeEventListener('click', enforceNewTab, true)
+      doc.removeEventListener('auxclick', enforceNewTab, true)
       ro?.disconnect()
       imgs.forEach((img) => img.removeEventListener('load', syncHeight))
     }
