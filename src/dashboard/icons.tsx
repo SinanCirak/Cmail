@@ -2,13 +2,13 @@ import type { ReactNode } from 'react'
 
 type IconProps = { className?: string; title?: string }
 function Icon({ className, title, children }: IconProps & { children: ReactNode }) {
-  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden={title ? undefined : true}>
+  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden={title ? undefined : true}>
     {title ? <title>{title}</title> : null}{children}
   </svg>
 }
 
 export function IconInbox(props: IconProps) {
-  return <Icon {...props}><path d="M4 4h16v16H4z"/><path d="M4 13h4l2 3h4l2-3h4"/></Icon>
+  return <Icon {...props}><path d="m4 4-2 9v5a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5l-2-9H4Z"/><path d="M2 13h6l2 3h4l2-3h6"/></Icon>
 }
 
 export function IconStar(props: IconProps) {
@@ -36,15 +36,15 @@ export function IconSearch(props: IconProps) {
 }
 
 export function IconMenu(props: IconProps) {
-  return <Icon {...props}><path d="M4 6h16M4 12h16M4 18h12"/></Icon>
+  return <Icon {...props}><path d="M4 6h16M4 12h16M4 18h16"/></Icon>
 }
 
 export function IconRefresh(props: IconProps) {
-  return <Icon {...props}><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.2 6.2a8 8 0 0 1 13.6 5.3M4.2 12.5a8 8 0 0 0 13.6 5.3"/></Icon>
+  return <Icon {...props}><path d="M20 4v6h-6"/><path d="M20 10a8 8 0 1 0 .5 5"/></Icon>
 }
 
 export function IconSettings(props: IconProps) {
-  return <Icon {...props}><path d="m9 3-.5 2-2 1.2-2-.5L2 10l1.5 1.5v2L2 15l2.5 4.3 2-.5 2 1.2.5 2h6l.5-2 2-1.2 2 .5L22 15l-1.5-1.5v-2L22 10l-2.5-4.3-2 .5-2-1.2L15 3H9Z"/><circle cx="12" cy="12.5" r="3.2"/></Icon>
+  return <Icon {...props}><path d="m9 3-.6 2.2-1.7 1-2.2-.6-2 3.5 1.6 1.6v2.6l-1.6 1.6 2 3.5 2.2-.6 1.7 1L9 21h6l.6-2.2 1.7-1 2.2.6 2-3.5-1.6-1.6v-2.6l1.6-1.6-2-3.5-2.2.6-1.7-1L15 3H9Z"/><circle cx="12" cy="12" r="3"/></Icon>
 }
 
 export function IconPaperclip(props: IconProps) {
@@ -52,7 +52,7 @@ export function IconPaperclip(props: IconProps) {
 }
 
 export function IconArchive(props: IconProps) {
-  return <Icon {...props}><rect x="3" y="3" width="18" height="4" rx="1"/><path d="M5 7v14h14V7M10 11h4"/></Icon>
+  return <Icon {...props}><rect x="3" y="3" width="18" height="4" rx="1.5"/><path d="M5 7v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7M10 11h4"/></Icon>
 }
 
 export function IconChevronLeft(props: IconProps) {
@@ -64,15 +64,15 @@ export function IconClose(props: IconProps) {
 }
 
 export function IconCompose(props: IconProps) {
-  return <Icon {...props}><path d="M12 4H4v16h16v-8"/><path d="m15.5 3.5 5 5M10 9l6.5-6.5a2.1 2.1 0 0 1 3 3L13 12l-4 1 1-4Z"/></Icon>
+  return <Icon {...props}><path d="m15 5 4 4M4 20l1-5L16.5 3.5a2.8 2.8 0 0 1 4 4L9 19l-5 1Z"/></Icon>
 }
 
 export function IconFolder(props: IconProps) {
-  return <Icon {...props}><path d="M3 7V4h6l3 3h9v13H3V7Z"/></Icon>
+  return <Icon {...props}><path d="M3 8V5a2 2 0 0 1 2-2h4l3 4h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z"/></Icon>
 }
 
 export function IconFolderPlus(props: IconProps) {
-  return <Icon {...props}><path d="M3 7V4h6l3 3h9v13H3V7Z"/><path d="M12 10v7m-3.5-3.5h7"/></Icon>
+  return <Icon {...props}><path d="M3 8V5a2 2 0 0 1 2-2h4l3 4h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z"/><path d="M12 10v7m-3.5-3.5h7"/></Icon>
 }
 
 export function IconMoon(props: IconProps) {
@@ -84,7 +84,7 @@ export function IconSun(props: IconProps) {
 }
 
 export function IconMove(props: IconProps) {
-  return <Icon {...props}><path d="M3 7V4h6l3 3h9v13H3V7Z"/><path d="M8 13h8m-3-3 3 3-3 3"/></Icon>
+  return <Icon {...props}><path d="M3 8V5a2 2 0 0 1 2-2h4l3 4h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z"/><path d="M8 13h8m-3-3 3 3-3 3"/></Icon>
 }
 
 export function IconReply(props: IconProps) {
