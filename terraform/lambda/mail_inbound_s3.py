@@ -15,6 +15,7 @@ from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
 
 import boto3
+import mail_rules
 
 METADATA_TABLE = os.environ["METADATA_TABLE"]
 MAIL_BUCKET = os.environ["MAIL_BUCKET"]
@@ -77,7 +78,8 @@ def process_object(bucket: str, key: str) -> None:
     uid = hashlib.sha256(f"{recipient}:{mid}".encode()).hexdigest()[:24]
 
     safe = _safe_mailbox(recipient)
-    folder_safe = "INBOX"
+    matched_folder = mail_rules.target_folder(ddb, METADATA_TABLE, _pk(recipient), msg.get("From", ""))
+    folder_safe = "UF" + matched_folder.replace("-", "") if matched_folder else "INBOX"
     dest_key = f"raw/{safe}/{folder_safe}/{uid}.eml"
     sk = f"MSG#{folder_safe}#{uid}"
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -20,6 +21,8 @@ from email.parser import BytesParser
 from email.utils import parseaddr
 
 import boto3
+import mail_index
+import mail_rules
 
 METADATA_TABLE = os.environ["METADATA_TABLE"]
 MAIL_BUCKET = os.environ["MAIL_BUCKET"]
@@ -37,6 +40,7 @@ FOLDER_TO_NAV: dict[str, str] = {
     "Sent_Messages": "sent",
     "Sent": "sent",
     "Drafts": "drafts",
+    "Archive": "archive",
     "Junk_Email": "spam",
     "Junk": "spam",
     "Deleted_Items": "trash",
@@ -64,6 +68,7 @@ NAV_PRIMARY_STORE: dict[str, str] = {
     "inbox": "INBOX",
     "sent": "Sent_Items",
     "drafts": "Drafts",
+    "archive": "Archive",
     "spam": "Junk_Email",
     "trash": "Deleted_Items",
 }
@@ -138,100 +143,8 @@ def _user_email(event) -> str | None:
 
 
 def list_folders(user_email: str) -> dict:
-    pk = _pk(user_email)
-    counts: dict[str, int] = {}
-    start_key = None
-    while True:
-        kw: dict = {
-            "TableName": METADATA_TABLE,
-            "KeyConditionExpression": "pk = :pk",
-            "ExpressionAttributeValues": {":pk": {"S": pk}},
-        }
-        if start_key:
-            kw["ExclusiveStartKey"] = start_key
-        resp = ddb.query(**kw)
-        for item in resp.get("Items", []):
-            folder_attr = item.get("folder", {}).get("S", "")
-            nav = FOLDER_TO_NAV.get(folder_attr)
-            if not nav:
-                continue
-            counts[nav] = counts.get(nav, 0) + 1
-        start_key = resp.get("LastEvaluatedKey")
-        if not start_key:
-            break
-
-    folders = [{"id": k, "count": v} for k, v in sorted(counts.items())]
-    return _response(200, {"folders": folders, "counts": counts})
-
-
-def list_messages(user_email: str, nav_folder: str) -> dict:
-    nav_key = (nav_folder or "inbox").lower()
-    if nav_key.startswith("custom:"):
-        fid = nav_key.split(":", 1)[1].strip()
-        try:
-            store_names = [_folder_store_segment(fid)]
-        except ValueError:
-            return _response(400, {"error": "invalid custom folder"})
-    else:
-        store_names = _store_prefixes_for_nav(nav_key)
-        if not store_names:
-            return _response(400, {"error": "unknown folder"})
-
-    pk = _pk(user_email)
-    items_out: list[dict] = []
-    seen_sk: set[str] = set()
-
-    for store_folder in store_names:
-        prefix = f"MSG#{store_folder}#"
-        start_key = None
-        while True:
-            kw = {
-                "TableName": METADATA_TABLE,
-                "KeyConditionExpression": "pk = :pk AND begins_with(sk, :pre)",
-                "ExpressionAttributeValues": {":pk": {"S": pk}, ":pre": {"S": prefix}},
-            }
-            if start_key:
-                kw["ExclusiveStartKey"] = start_key
-            resp = ddb.query(**kw)
-            for item in resp.get("Items", []):
-                sk = item["sk"]["S"]
-                if sk in seen_sk:
-                    continue
-                seen_sk.add(sk)
-                subject = item.get("subject", {}).get("S", "")
-                from_addr = item.get("from_addr", {}).get("S", "")
-                sort_ts = int(item.get("sort_ts", {}).get("N", "0"))
-                s3_key = item.get("s3_key", {}).get("S", "")
-                uid = item.get("imap_uid", {}).get("S", sk.split("#")[-1])
-                read_attr = item.get("read")
-                if isinstance(read_attr, dict) and "BOOL" in read_attr:
-                    read_val = bool(read_attr.get("BOOL"))
-                else:
-                    read_val = _default_read_for_folder(store_folder)
-                items_out.append(
-                    {
-                        "id": sk,
-                        "folder": nav_key,
-                        "subject": subject or "(No subject)",
-                        "snippet": (subject[:160] + "…") if len(subject) > 160 else subject,
-                        "from": {
-                            "name": from_addr.split("<")[0].strip() or from_addr,
-                            "email": _parse_email(from_addr),
-                        },
-                        "sentAt": datetime.fromtimestamp(sort_ts, tz=timezone.utc).isoformat(),
-                        "read": read_val,
-                        "starred": False,
-                        "hasAttachment": False,
-                        "s3Key": s3_key,
-                        "imapUid": uid,
-                    }
-                )
-            start_key = resp.get("LastEvaluatedKey")
-            if not start_key:
-                break
-
-    items_out.sort(key=lambda x: x["sentAt"], reverse=True)
-    return _response(200, {"messages": items_out})
+    counts = mail_index.page(_pk(user_email), "inbox")['counts']
+    return _response(200, {"counts": counts, "folders": [{"id": key, "count": value} for key, value in counts.items()]})
 
 
 def _parse_email(from_line: str) -> str:
@@ -505,7 +418,7 @@ def move_message(user_email: str, sk: str, target_nav: str) -> dict:
     pk = _pk(user_email)
     safe = _safe_mailbox(user_email)
 
-    item = ddb.get_item(TableName=METADATA_TABLE, Key={"pk": {"S": pk}, "sk": {"S": sk}}).get(
+    item = ddb.get_item(TableName=METADATA_TABLE, Key={"pk": {"S": pk}, "sk": {"S": sk}}, ConsistentRead=True).get(
         "Item",
     )
     if not item:
@@ -526,6 +439,9 @@ def move_message(user_email: str, sk: str, target_nav: str) -> dict:
     if new_sk == sk:
         return _response(200, {"ok": True, "sk": sk, "s3Key": old_key})
 
+    if ddb.get_item(TableName=METADATA_TABLE, Key={'pk': {'S': pk}, 'sk': {'S': new_sk}}, ConsistentRead=True).get('Item'):
+        return _response(409, {'error': 'A message with this identifier already exists in the destination'})
+
     try:
         s3.copy_object(
             Bucket=MAIL_BUCKET,
@@ -533,12 +449,10 @@ def move_message(user_email: str, sk: str, target_nav: str) -> dict:
             Key=new_key,
             MetadataDirective="COPY",
         )
-        s3.delete_object(Bucket=MAIL_BUCKET, Key=old_key)
     except Exception as e:
         return _response(500, {"error": f"s3: {e}"})
 
     try:
-        ddb.delete_item(TableName=METADATA_TABLE, Key={"pk": {"S": pk}, "sk": {"S": sk}})
         item2 = dict(item)
         item2["sk"] = {"S": new_sk}
         item2["s3_key"] = {"S": new_key}
@@ -546,9 +460,18 @@ def move_message(user_email: str, sk: str, target_nav: str) -> dict:
         if "read" not in item2:
             item2["read"] = {"BOOL": _default_read_for_folder(new_store)}
         # keep subject, from_addr, sort_ts, imap_uid, etc.
-        ddb.put_item(TableName=METADATA_TABLE, Item=item2)
-    except Exception as e:
-        return _response(500, {"error": str(e)})
+        ddb.transact_write_items(TransactItems=[
+            {'Put': {'TableName': METADATA_TABLE, 'Item': item2, 'ConditionExpression': 'attribute_not_exists(pk)'}},
+            {'Delete': {'TableName': METADATA_TABLE, 'Key': {'pk': {'S': pk}, 'sk': {'S': sk}},
+                        'ConditionExpression': 's3_key = :old', 'ExpressionAttributeValues': {':old': {'S': old_key}}}},
+        ])
+    except Exception:
+        logging.exception('Message metadata move failed; original source retained')
+        return _response(500, {'error': 'Could not move message; original message retained'})
+    try:
+        s3.delete_object(Bucket=MAIL_BUCKET, Key=old_key)
+    except Exception:
+        logging.exception('Moved message saved; old raw copy cleanup failed')
 
     return _response(200, {"ok": True, "sk": new_sk, "s3Key": new_key, "folder": target_nav})
 
@@ -578,6 +501,7 @@ def set_read_state(user_email: str, sks: list[str], read: bool) -> dict:
             ddb.update_item(
                 TableName=METADATA_TABLE,
                 Key={"pk": {"S": pk}, "sk": {"S": sk}},
+                ConditionExpression="attribute_exists(pk) AND attribute_exists(sk)",
                 UpdateExpression="SET #r = :v",
                 ExpressionAttributeNames={"#r": "read"},
                 ExpressionAttributeValues={":v": {"BOOL": bool(read)}},
@@ -586,6 +510,22 @@ def set_read_state(user_email: str, sks: list[str], read: bool) -> dict:
         except Exception:
             continue
     return _response(200, {"ok": True, "updated": updated})
+
+
+def set_starred_state(user_email: str, sk: str, starred: bool) -> dict:
+    if not sk.startswith("MSG#"):
+        return _response(400, {"error": "invalid sk"})
+    try:
+        ddb.update_item(
+            TableName=METADATA_TABLE,
+            Key={"pk": {"S": _pk(user_email)}, "sk": {"S": sk}},
+            UpdateExpression="SET starred = :v",
+            ExpressionAttributeValues={":v": {"BOOL": starred}},
+            ConditionExpression="attribute_exists(pk) AND attribute_exists(sk)",
+        )
+    except ddb.exceptions.ConditionalCheckFailedException:
+        return _response(404, {"error": "not found"})
+    return _response(200, {"ok": True, "starred": starred})
 
 
 def _save_sent_copy(user_email: str, msg: EmailMessage, raw: bytes, subject: str) -> None:
@@ -652,10 +592,34 @@ def send_outbound(user_email: str, payload: dict) -> dict:
     else:
         msg.set_content(body_text if body_text else "(empty)", subtype="plain", charset="utf-8")
 
+    total_att = 0
+    inline_images = payload.get("inlineImages") or []
+    if not isinstance(inline_images, list):
+        return _response(400, {"error": "inlineImages must be an array"})
+    html_part = msg.get_body(preferencelist=("html",))
+    seen_cids: set[str] = set()
+    for image in inline_images:
+        if not isinstance(image, dict):
+            return _response(400, {"error": "invalid inline image"})
+        cid = _normalize_cid_header(str(image.get("cid") or ""))
+        ctype = str(image.get("contentType") or "image/png").lower()
+        if not cid or len(cid) > 200 or re.search(r"[\r\n<>]", cid) or not ctype.startswith("image/") or html_part is None:
+            return _response(400, {"error": "invalid inline image metadata"})
+        if cid in seen_cids:
+            continue
+        try:
+            data = _b64_decode_attachment(str(image.get("contentBase64") or ""))
+        except Exception:
+            return _response(400, {"error": "invalid inline image data"})
+        total_att += len(data)
+        if not data or total_att > 15 * 1024 * 1024:
+            return _response(400, {"error": "inline images too large or empty"})
+        html_part.add_related(data, maintype="image", subtype=ctype.split("/", 1)[1], cid=f"<{cid}>", disposition="inline")
+        seen_cids.add(cid)
+
     attachments_in = payload.get("attachments") or []
     if not isinstance(attachments_in, list):
         attachments_in = []
-    total_att = 0
     for item in attachments_in:
         if not isinstance(item, dict):
             continue
@@ -704,6 +668,7 @@ def list_user_folders(user_email: str) -> dict:
     while True:
         kw: dict = {
             "TableName": METADATA_TABLE,
+            "ConsistentRead": True,
             "KeyConditionExpression": "pk = :pk AND begins_with(sk, :pre)",
             "ExpressionAttributeValues": {":pk": {"S": pk}, ":pre": {"S": "FOLDER#"}},
         }
@@ -716,7 +681,7 @@ def list_user_folders(user_email: str) -> dict:
                 continue
             fid = sk[7:]
             name = item.get("name", {}).get("S", "")
-            out.append({"id": fid, "name": name})
+            out.append({"id": fid, "name": name, "senders": [v["S"] for v in item.get("senders", {}).get("L", [])]})
         start_key = resp.get("LastEvaluatedKey")
         if not start_key:
             break
@@ -725,22 +690,110 @@ def list_user_folders(user_email: str) -> dict:
 
 
 def create_user_folder(user_email: str, payload: dict) -> dict:
-    name = (payload.get("name") or "").strip()
-    if not name:
-        return _response(400, {"error": "name required"})
-    fid = str(uuid.uuid4())
+    name = payload.get('name')
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 500:
+        return _response(400, {'error': 'Folder name must be between 1 and 500 characters'})
+    name = name.strip()
+    try:
+        senders = mail_rules.addresses(payload.get('senders', []))
+        fid = str(uuid.UUID(payload['requestId'])) if payload.get('requestId') else str(uuid.uuid4())
+    except (ValueError, TypeError, AttributeError):
+        return _response(400, {'error': 'Enter email addresses or domain rules (maximum 20)'})
     pk = _pk(user_email)
-    sk = f"FOLDER#{fid}"
-    ddb.put_item(
-        TableName=METADATA_TABLE,
-        Item={
-            "pk": {"S": pk},
-            "sk": {"S": sk},
-            "name": {"S": name[:500]},
-            "created_ts": {"N": str(int(time.time()))},
-        },
-    )
-    return _response(200, {"id": fid, "name": name})
+    existing = ddb.get_item(TableName=METADATA_TABLE, Key={'pk': {'S': pk}, 'sk': {'S': f'FOLDER#{fid}'}}, ConsistentRead=True).get('Item')
+    if existing:
+        old_senders = [v['S'] for v in existing.get('senders', {}).get('L', [])]
+        if existing['name']['S'] == name and set(old_senders) == set(senders):
+            return _response(200, {'id': fid, 'name': name, 'senders': senders})
+        return _response(409, {'error': 'This folder request was already used; close and reopen the form'})
+    item = {'pk': {'S': pk}, 'sk': {'S': f'FOLDER#{fid}'}, 'name': {'S': name},
+            'created_ts': {'N': str(int(time.time()))}, 'senders': {'L': [{'S': v} for v in senders]}}
+    writes = [{'Put': {'TableName': METADATA_TABLE, 'Item': item, 'ConditionExpression': 'attribute_not_exists(pk)'}}]
+    for sender in senders:
+        writes.append({'Put': {'TableName': METADATA_TABLE, 'Item': {
+            'pk': {'S': pk}, 'sk': {'S': 'RULE#FROM#' + sender}, 'folder_id': {'S': fid}},
+            'ConditionExpression': 'attribute_not_exists(pk)'}})
+    try:
+        ddb.transact_write_items(TransactItems=writes)
+    except ddb.exceptions.TransactionCanceledException as exc:
+        if any(r.get('Code') == 'ConditionalCheckFailed' for r in exc.response.get('CancellationReasons', [])):
+            return _response(409, {'error': 'A sender rule is already linked to another folder'})
+        raise
+    return _response(200, {'id': fid, 'name': name, 'senders': senders})
+
+
+def update_folder_senders(user_email: str, payload: dict) -> dict:
+    try:
+        fid = str(uuid.UUID(payload.get('folderId', '')))
+        senders = mail_rules.addresses(payload.get('senders'))
+    except (ValueError, TypeError, AttributeError):
+        return _response(400, {'error': 'Enter a valid folder and up to 20 email or domain rules'})
+    pk = _pk(user_email)
+    key = {'pk': {'S': pk}, 'sk': {'S': 'FOLDER#' + fid}}
+    folder = ddb.get_item(TableName=METADATA_TABLE, Key=key, ConsistentRead=True).get('Item')
+    if not folder:
+        return _response(404, {'error': 'Folder not found'})
+    previous = {v['S'] for v in folder.get('senders', {}).get('L', [])}
+    values = {':new': {'L': [{'S': address} for address in senders]}}
+    condition = 'attribute_exists(pk) AND attribute_not_exists(senders)'
+    if 'senders' in folder:
+        values[':old'] = folder['senders']
+        condition = 'attribute_exists(pk) AND senders = :old'
+    writes = [{'Update': {'TableName': METADATA_TABLE, 'Key': key,
+        'UpdateExpression': 'SET senders = :new', 'ExpressionAttributeValues': values, 'ConditionExpression': condition}}]
+    for address in sorted(set(senders) - previous):
+        writes.append({'Put': {'TableName': METADATA_TABLE, 'Item': {
+            'pk': {'S': pk}, 'sk': {'S': 'RULE#FROM#' + address}, 'folder_id': {'S': fid}},
+            'ConditionExpression': 'attribute_not_exists(pk)'}})
+    for address in sorted(previous - set(senders)):
+        writes.append({'Delete': {'TableName': METADATA_TABLE,
+            'Key': {'pk': {'S': pk}, 'sk': {'S': 'RULE#FROM#' + address}},
+            'ConditionExpression': 'attribute_not_exists(pk) OR folder_id = :fid',
+            'ExpressionAttributeValues': {':fid': {'S': fid}}}})
+    try:
+        ddb.transact_write_items(TransactItems=writes)
+    except ddb.exceptions.TransactionCanceledException as exc:
+        if any(r.get('Code') == 'ConditionalCheckFailed' for r in exc.response.get('CancellationReasons', [])):
+            return _response(409, {'error': 'A sender rule is already linked to another folder, or these rules changed. Reload and retry.'})
+        raise
+    return _response(200, {'id': fid, 'name': folder['name']['S'], 'senders': senders})
+
+
+def apply_folder_rule(user_email: str, payload: dict) -> dict:
+    """Bounded, resumable Inbox-only batch; never scan or move another mailbox."""
+    try:
+        fid = str(uuid.UUID(payload.get('folderId', '')))
+    except (ValueError, TypeError, AttributeError):
+        return _response(400, {'error': 'Invalid folder id'})
+    pk = _pk(user_email)
+    folder = ddb.get_item(TableName=METADATA_TABLE, Key={'pk': {'S': pk}, 'sk': {'S': f'FOLDER#{fid}'}}, ConsistentRead=True).get('Item')
+    if not folder:
+        return _response(404, {'error': 'Folder not found'})
+    senders = {v['S'] for v in folder.get('senders', {}).get('L', [])}
+    if not senders:
+        return _response(400, {'error': 'This folder has no sender rules'})
+    cursor = payload.get('cursor')
+    if cursor is not None and (not isinstance(cursor, str) or len(cursor) > 1024 or not cursor.startswith('MSG#INBOX#')):
+        return _response(400, {'error': 'Invalid Inbox cursor'})
+    kw = dict(TableName=METADATA_TABLE, KeyConditionExpression='pk = :p AND begins_with(sk, :s)',
+              ExpressionAttributeValues={':p': {'S': pk}, ':s': {'S': 'MSG#INBOX#'}}, ConsistentRead=True, Limit=10)
+    if cursor:
+        kw['ExclusiveStartKey'] = {'pk': {'S': pk}, 'sk': {'S': cursor}}
+    result = ddb.query(**kw)
+    moved = 0
+    checkpoint = cursor
+    for item in result.get('Items', []):
+        sk = item['sk']['S']
+        header = item.get('from_addr', {}).get('S', '')
+        if mail_rules.matches(senders, header) and mail_rules.target_folder(ddb, METADATA_TABLE, pk, header) == fid:
+            response = move_message(user_email, sk, 'custom:' + fid)
+            if response['statusCode'] != 200:
+                return _response(200, {'moved': moved, 'nextCursor': checkpoint, 'complete': False,
+                    'error': json.loads(response['body']).get('error', 'Could not move message')})
+            moved += 1
+        checkpoint = sk
+    next_cursor = result.get('LastEvaluatedKey', {}).get('sk', {}).get('S')
+    return _response(200, {'moved': moved, 'nextCursor': next_cursor, 'complete': next_cursor is None})
 
 
 def delete_user_folder(user_email: str, folder_id: str) -> dict:
@@ -773,10 +826,21 @@ def delete_user_folder(user_email: str, folder_id: str) -> dict:
         mv = move_message(user_email, sk, "inbox")
         if mv.get("statusCode") != 200:
             return mv
-    ddb.delete_item(
-        TableName=METADATA_TABLE,
-        Key={"pk": {"S": pk}, "sk": {"S": f"FOLDER#{fid}"}},
-    )
+    folder = ddb.get_item(TableName=METADATA_TABLE, Key={'pk': {'S': pk}, 'sk': {'S': f'FOLDER#{fid}'}}, ConsistentRead=True).get('Item', {})
+    folder_delete = {'TableName': METADATA_TABLE, 'Key': {'pk': {'S': pk}, 'sk': {'S': f'FOLDER#{fid}'}}}
+    if 'senders' in folder:
+        folder_delete.update(ConditionExpression='senders = :old', ExpressionAttributeValues={':old': folder['senders']})
+    else:
+        folder_delete['ConditionExpression'] = 'attribute_not_exists(senders)'
+    deletes = [{'Delete': folder_delete}]
+    for sender in folder.get('senders', {}).get('L', []):
+        deletes.append({'Delete': {'TableName': METADATA_TABLE, 'Key': {'pk': {'S': pk}, 'sk': {'S': 'RULE#FROM#' + sender['S']}}}})
+    try:
+        ddb.transact_write_items(TransactItems=deletes)
+    except ddb.exceptions.TransactionCanceledException as exc:
+        if any(r.get('Code') == 'ConditionalCheckFailed' for r in exc.response.get('CancellationReasons', [])):
+            return _response(409, {'error': 'Folder rules changed during deletion. Moved messages are in Inbox; retry deleting the folder.'})
+        raise
     return _response(200, {"ok": True})
 
 
@@ -897,7 +961,27 @@ def lambda_handler(event, context):
 
     if path == "/mail/messages" and method == "GET":
         folder = qs.get("folder", "inbox")
-        return list_messages(user_email, folder)
+        if folder not in {*NAV_PRIMARY_STORE, "starred", "all"} and not folder.startswith("custom:"):
+            return _response(400, {"error": "unknown folder"})
+        try:
+            # Keep the old frontend's folder-only request compatible during rollout.
+            legacy = not any(name in qs for name in ("q", "unread", "includeExcluded", "cursor"))
+            options = dict(query=qs.get("q", "").strip(), unread=qs.get("unread") == "true",
+                           include_excluded=qs.get("includeExcluded") == "true", limit=25)
+            data = mail_index.page(_pk(user_email), folder, cursor=qs.get("cursor"), **options)
+            if legacy:
+                messages = list(data['messages'])
+                cursor = data['nextCursor']
+                while cursor:
+                    next_page = mail_index.page(_pk(user_email), folder, cursor=cursor, **options)
+                    messages.extend(next_page['messages'])
+                    cursor = next_page['nextCursor']
+                data.update(messages=messages, nextCursor=None, start=1 if messages else 0, end=len(messages))
+            return _response(200, data)
+        except ValueError as exc:
+            return _response(400, {"error": str(exc)})
+        except Exception:
+            return _response(503, {"error": "Mail index is temporarily unavailable. Please retry."})
 
     if path == "/mail/content" and method == "GET":
         sk = qs.get("s3_key") or qs.get("s3Key")
@@ -925,12 +1009,23 @@ def lambda_handler(event, context):
         return remove_trusted_image_domain(user_email, dom_q)
 
     if path == "/mail/user-folders" and method == "POST":
+        if body.get("action") == "updateSenderRule":
+            return update_folder_senders(user_email, body)
+        if body.get("action") == "applySenderRule":
+            return apply_folder_rule(user_email, body)
         return create_user_folder(user_email, body)
 
     if method == "DELETE" and path.startswith("/mail/user-folders/"):
         tail = path[len("/mail/user-folders/") :].strip("/")
         if tail:
             return delete_user_folder(user_email, tail)
+
+    if path == "/mail/messages/star" and method == "PATCH":
+        sk = body.get("sk")
+        starred = body.get("starred")
+        if not isinstance(sk, str) or not isinstance(starred, bool):
+            return _response(400, {"error": "sk and starred(boolean) required"})
+        return set_starred_state(user_email, sk, starred)
 
     if path == "/mail/message" and method == "PATCH":
         sk_raw = body.get("sk") or qs.get("sk")
