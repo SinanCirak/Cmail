@@ -733,14 +733,23 @@ def update_folder_senders(user_email: str, payload: dict) -> dict:
     folder = ddb.get_item(TableName=METADATA_TABLE, Key=key, ConsistentRead=True).get('Item')
     if not folder:
         return _response(404, {'error': 'Folder not found'})
+    name = payload.get('name', folder['name']['S'])
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 500:
+        return _response(400, {'error': 'Folder name must be between 1 and 500 characters'})
+    name = name.strip()
+    if 'expectedName' in payload and payload['expectedName'] != folder['name']['S']:
+        return _response(409, {'error': 'The folder name changed elsewhere. Refresh and retry.'})
     previous = {v['S'] for v in folder.get('senders', {}).get('L', [])}
     values = {':new': {'L': [{'S': address} for address in senders]}}
     condition = 'attribute_exists(pk) AND attribute_not_exists(senders)'
     if 'senders' in folder:
         values[':old'] = folder['senders']
         condition = 'attribute_exists(pk) AND senders = :old'
+    values.update({':newName': {'S': name}, ':oldName': folder['name']})
+    condition += ' AND #n = :oldName'
     writes = [{'Update': {'TableName': METADATA_TABLE, 'Key': key,
-        'UpdateExpression': 'SET senders = :new', 'ExpressionAttributeValues': values, 'ConditionExpression': condition}}]
+        'UpdateExpression': 'SET senders = :new, #n = :newName', 'ExpressionAttributeNames': {'#n': 'name'},
+        'ExpressionAttributeValues': values, 'ConditionExpression': condition}}]
     for address in sorted(set(senders) - previous):
         writes.append({'Put': {'TableName': METADATA_TABLE, 'Item': {
             'pk': {'S': pk}, 'sk': {'S': 'RULE#FROM#' + address}, 'folder_id': {'S': fid}},
@@ -756,7 +765,7 @@ def update_folder_senders(user_email: str, payload: dict) -> dict:
         if any(r.get('Code') == 'ConditionalCheckFailed' for r in exc.response.get('CancellationReasons', [])):
             return _response(409, {'error': 'A sender rule is already linked to another folder, or these rules changed. Reload and retry.'})
         raise
-    return _response(200, {'id': fid, 'name': folder['name']['S'], 'senders': senders})
+    return _response(200, {'id': fid, 'name': name, 'senders': senders})
 
 
 def apply_folder_rule(user_email: str, payload: dict) -> dict:
