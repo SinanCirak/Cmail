@@ -110,11 +110,11 @@ export async function createUserFolderApi(
 }
 
 export async function updateFolderSenders(
-  apiBase: string, token: string, folderId: string, senders: string[],
+  apiBase: string, token: string, folderId: string, senders: string[], name?: string, expectedName?: string,
 ): Promise<UserFolder> {
   const res = await authenticatedFetch(`${apiBase}/mail/user-folders`, {
     method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'updateSenderRule', folderId, senders }),
+    body: JSON.stringify({ action: 'updateSenderRule', folderId, senders, name, expectedName }),
   })
   await failIfNotOk(res)
   return res.json()

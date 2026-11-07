@@ -241,7 +241,7 @@ function SettingsModal(props: {
   liveMailEnabled: boolean
   trustedDomainsSyncError: string | null
   userFolders: UserFolder[]
-  onSaveFolderSenders: (id: string, senders: string[]) => Promise<UserFolder>
+  onSaveFolderSenders: (id: string, senders: string[], name: string) => Promise<UserFolder>
   onApplyFolderRule: (id: string, cursor: string | null, senders: string[]) => Promise<FolderRuleBatch>
 }) {
   const {
@@ -1736,7 +1736,7 @@ export function MailDashboard({
     }
   }, [newFolderName, newFolderSenders, newFolderApplyExisting, useLiveMail, mailApiBase, userFolders])
 
-  const saveFolderSenders = useCallback(async (id: string, senders: string[]): Promise<UserFolder> => {
+  const saveFolderSenders = useCallback(async (id: string, senders: string[], name: string): Promise<UserFolder> => {
     const existing = userFolders.find((folder) => folder.id === id)
     if (!existing) throw new Error('Folder not found. Refresh and retry.')
     folderWriteVersion.current += 1
@@ -1745,15 +1745,15 @@ export function MailDashboard({
       if (useLiveMail && mailApiBase) {
         const session = getSession()
         if (!session) throw new Error('Please sign in again.')
-        updated = await updateFolderSenders(mailApiBase, getBearerTokenForApi(session), id, senders)
-        if (!Array.isArray(updated.senders) || updated.senders.length !== senders.length || senders.some((rule) => !updated.senders?.includes(rule))) {
-          throw new Error('Could not confirm the saved rules. Refresh and retry.')
+        updated = await updateFolderSenders(mailApiBase, getBearerTokenForApi(session), id, senders, name, existing.name)
+        if (updated.name !== name || !Array.isArray(updated.senders) || updated.senders.length !== senders.length || senders.some((rule) => !updated.senders?.includes(rule))) {
+          throw new Error('Could not confirm the saved folder settings. Refresh and retry.')
         }
       } else {
         if (userFolders.some((folder) => folder.id !== id && folder.senders?.some((rule) => senders.includes(rule)))) {
           throw new Error('A sender rule is already linked to another folder.')
         }
-        updated = { ...existing, senders }
+        updated = { ...existing, name, senders }
       }
       setUserFolders((prev) => prev.map((folder) => folder.id === id ? updated : folder))
       return updated
