@@ -616,10 +616,14 @@
 .cm-read__move {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
+  justify-content: center;
   position: relative;
-  padding: 0.25rem 0.4rem;
+  flex: 0 0 2.5rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
   border-radius: 8px;
+  overflow: hidden;
 }
 
 .cm-read__move:hover {
@@ -632,7 +636,26 @@
   opacity: 0;
   cursor: pointer;
   width: 100%;
-  min-height: 2.5rem;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0;
+  border: 0;
+}
+
+.cm-read__move:focus-within {
+  outline: 2px solid var(--cm-accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 560px) {
+  .cm-read__move {
+    flex-basis: 42px;
+    width: 42px;
+    height: 44px;
+  }
 }
 
 .cm-move-select {
@@ -644,12 +667,6 @@
   background: var(--cm-surface);
   color: var(--cm-text-heading);
   cursor: pointer;
-}
-
-.cm-move-select--read {
-  min-width: 6.5rem;
-  opacity: 1;
-  position: relative;
 }
 
 .cm-move-select:focus {
