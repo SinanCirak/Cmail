@@ -47,6 +47,7 @@ import { EmailHtmlIframe } from './EmailHtmlIframe'
 import { FolderRulesSettings } from './FolderRulesSettings'
 import { SidebarResizeHandle } from './SidebarResizeHandle'
 import { parseSenderRules, findSenderRuleFolder } from '../mail/senderRules'
+import { OptimisticMailbox, mailboxMetrics, type MailView } from '../mail/optimisticMailbox'
 
 const ComposeRichEditor = lazy(() =>
   import('./ComposeRichEditor').then((m) => ({ default: m.ComposeRichEditor })),
@@ -770,6 +771,9 @@ export function MailDashboard({
   const [pagination, setPagination] = useState<{ key: string; cursors: (string | null)[]; index: number }>({ key: '', cursors: [null], index: 0 })
   const loadVersion = useRef(0)
   const folderWriteVersion = useRef(0)
+  const mailChanges = useRef(new OptimisticMailbox())
+  const [, setMailChangeVersion] = useState(0)
+  const mailIntent = useRef(0)
   const reloadMailboxRef = useRef<((opts?: { silent?: boolean }) => Promise<void>) | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const [showUnreadOnly, setShowUnreadOnly] = useState(false)
@@ -902,13 +906,14 @@ export function MailDashboard({
   const pageIndex = pagination.key === queryKey ? pagination.index : 0
   const cursor = pagination.key === queryKey ? pagination.cursors[pageIndex] ?? null : null
   useEffect(() => {
+    mailIntent.current += 1
     setSelectedId(null)
     setBulkSelectedIds(new Set())
     listRef.current?.scrollTo(0, 0)
   }, [queryKey, cursor])
 
-  const counts = useMemo(() => {
-    if (useLiveMail) return { ...pageData?.counts, starred: starCountOverride ?? pageData?.counts.starred ?? 0 }
+  const counts = (() => {
+    if (useLiveMail) return mailChanges.current.counters({ ...mailboxMetrics(pageData), starred: starCountOverride ?? pageData?.counts.starred ?? 0 })
     const c: Record<string, number> = { starred: 0 }
     for (const m of emails) {
       c[m.folder] = (c[m.folder] ?? 0) + 1
@@ -917,10 +922,11 @@ export function MailDashboard({
       }
     }
     return c
-  }, [emails, useLiveMail, pageData, starCountOverride])
+  })()
 
-  const unreadCounts = useMemo<Record<string, number>>(() => {
-    if (useLiveMail) return { inbox: pageData?.unreadInbox ?? 0, ...pageData?.unreadCounts }
+  const unreadCounts: Record<string, number> = (() => {
+    if (useLiveMail) return Object.fromEntries(Object.entries(mailChanges.current.counters(mailboxMetrics(pageData)))
+      .filter(([key]) => key.endsWith(':unread')).map(([key, value]) => [key.slice(0, -7), value]))
     const result: Record<string, number> = {}
     for (const message of emails) {
       if (message.read) continue
@@ -930,7 +936,7 @@ export function MailDashboard({
       }
     }
     return result
-  }, [useLiveMail, pageData, emails])
+  })()
 
   type ListMailRow = MailMessage & { threadCount?: number; threadIds?: string[] }
   const filteredDemoEmails = useMemo(() => {
@@ -941,17 +947,22 @@ export function MailDashboard({
     return filterBySearch(showUnreadOnly ? source.filter((m) => !m.read) : source, debouncedSearch)
       .sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())
   }, [useLiveMail, emails, debouncedSearch, searchScope, includeExcluded, folder, showUnreadOnly])
-  const listEmails = useMemo<ListMailRow[]>(() => {
-    const source = useLiveMail ? emails : filteredDemoEmails.slice(pageIndex * 25, (pageIndex + 1) * 25)
+  const listEmails: ListMailRow[] = (() => {
+    const source = useLiveMail ? mailChanges.current.rows(emails, { folder: debouncedSearch && searchScope === 'all' ? 'all' : folder, query: debouncedSearch, unread: showUnreadOnly, includeExcluded, cursor }) : filteredDemoEmails.slice(pageIndex * 25, (pageIndex + 1) * 25)
     const visible = useLiveMail && folder === 'starred' && !(debouncedSearch && searchScope === 'all')
       ? source.filter((m) => m.starred && m.folder !== 'spam' && m.folder !== 'trash') : source
     return visible.map((msg) => ({ ...msg, threadCount: 1, threadIds: [msg.id] }))
-  }, [useLiveMail, emails, filteredDemoEmails, pageIndex, folder, debouncedSearch, searchScope])
+  })()
   const totalMessages = useLiveMail
-    ? folder === 'starred' && !debouncedSearch && !showUnreadOnly ? counts.starred ?? 0 : pageData?.total ?? 0
+    ? folder === 'starred' && !debouncedSearch && !showUnreadOnly ? counts.starred ?? 0 : pageData ? mailChanges.current.queryTotal(pageData, { folder: debouncedSearch && searchScope === 'all' ? 'all' : folder, query: debouncedSearch, unread: showUnreadOnly, includeExcluded, cursor }) : 0
     : filteredDemoEmails.length
   const pageStart = useLiveMail ? listEmails.length ? pageData?.start || 1 : 0 : totalMessages ? pageIndex * 25 + 1 : 0
   const pageEnd = useLiveMail ? listEmails.length ? pageStart + listEmails.length - 1 : 0 : Math.min((pageIndex + 1) * 25, totalMessages)
+  useEffect(() => {
+    if (!useLiveMail) return
+    const lastPage = Math.max(0, Math.ceil(totalMessages / 25) - 1)
+    if (pageIndex > lastPage) setPagination((prev) => ({ ...prev, index: lastPage }))
+  }, [useLiveMail, totalMessages, pageIndex])
   const changePage = (direction: -1 | 1) => {
     setPagination((prev) => {
       const cursors = prev.key === queryKey ? [...prev.cursors] : [null]
@@ -1141,6 +1152,7 @@ export function MailDashboard({
   }, [search])
 
   useEffect(() => {
+    mailIntent.current += 1
     setSelectedId(null)
     setBulkSelectedIds(new Set())
   }, [folder])
@@ -1170,14 +1182,17 @@ export function MailDashboard({
     e?.stopPropagation()
     const msg = emails.find((m) => m.id === id)
     if (!msg || starPending.current.has(id)) return
+    if (mailChanges.current.isPending(id)) return
     const starred = !msg.starred
     const session = getSession()
     if (useLiveMail && !session) return
     const countDelta = msg.folder === 'spam' || msg.folder === 'trash' ? 0 : starred ? 1 : -1
     if (useLiveMail) {
-      starCountRef.current = Math.max(0, (starCountRef.current ?? pageData?.counts.starred ?? 0) + countDelta)
+      starCountRef.current = Math.max(0, (starCountRef.current ?? mailChanges.current.counters(mailboxMetrics(pageData)).starred ?? 0) + countDelta)
       setStarCountOverride(starCountRef.current)
     }
+    mailChanges.current.shift('starred', countDelta, { ...mailboxMetrics(pageData), starred: starCountRef.current !== null ? starCountRef.current - countDelta : pageData?.counts.starred ?? 0 })
+    mailChanges.current.patchTracked(id, { starred }, mailboxMetrics(pageData), true)
     const previousChoice = starOverrides.current.get(id)
     starOverrides.current.set(id, { ...msg, starred })
     starPending.current.set(id, starred)
@@ -1189,6 +1204,8 @@ export function MailDashboard({
         void reloadMailboxRef.current?.({ silent: true })
       }
     } catch (error) {
+      mailChanges.current.patchTracked(id, { starred: msg.starred }, mailboxMetrics(pageData), true)
+      mailChanges.current.shift('starred', -countDelta, mailboxMetrics(pageData))
       if (previousChoice) starOverrides.current.set(id, previousChoice)
       else starOverrides.current.delete(id)
       if (useLiveMail) {
@@ -1235,13 +1252,17 @@ export function MailDashboard({
   }, [])
 
   const openMail = useCallback(async (id: string) => {
+    mailIntent.current += 1
     const ids = actionIdsForDisplayId.get(id) ?? [id]
     const idSet = new Set(ids)
     setBulkSelectedIds(new Set())
     setSelectedId(id)
-    setEmails((prev) =>
-      prev.map((m) => (idSet.has(m.id) ? { ...m, read: true } : m)),
-    )
+    const moved = mailChanges.current.message(id)
+    for (const messageId of ids) mailChanges.current.patchTracked(messageId, { read: true }, mailboxMetrics(pageData))
+    setEmails((prev) => {
+      const source = moved && !prev.some((message) => message.id === id) ? [...prev, moved] : prev
+      return source.map((m) => (idSet.has(m.id) ? { ...m, read: true } : m))
+    })
     if (useLiveMail && mailApiBase) {
       const session = getSession()
       if (session) {
@@ -1252,7 +1273,7 @@ export function MailDashboard({
         }
       }
     }
-  }, [useLiveMail, mailApiBase, actionIdsForDisplayId])
+  }, [useLiveMail, mailApiBase, actionIdsForDisplayId, pageData])
 
   const loadLiveMailbox = useCallback(async (opts?: { silent?: boolean }) => {
     if (!useLiveMail || !mailApiBase) return
@@ -1313,7 +1334,10 @@ export function MailDashboard({
           list = list.slice(0, 25)
         }
       }
-      setPageData({ ...data, total: Math.max(data.total, list.length),
+      const currentView: MailView = { folder: effectiveFolder, query: debouncedSearch, unread: showUnreadOnly, includeExcluded, cursor }
+      mailChanges.current.reconcile(data, currentView)
+      list = mailChanges.current.rows(list, currentView)
+      setPageData({ ...data, total: data.total,
         start: list.length ? data.start || 1 : 0, end: list.length ? (data.start || 1) + list.length - 1 : 0 })
       setEmails((prev) => {
         const prevById = new Map(prev.map((m) => [m.id, m]))
@@ -1461,12 +1485,13 @@ export function MailDashboard({
   }, [useLiveMail, mailApiBase, selected?.id, selected?.s3Key])
 
   const goBackToList = useCallback(() => {
+    mailIntent.current += 1
     setSelectedId(null)
   }, [])
 
   const unreadInInbox = useMemo(
-    () => useLiveMail ? pageData?.unreadInbox ?? 0 : emails.filter((m) => m.folder === 'inbox' && !m.read).length,
-    [emails, useLiveMail, pageData],
+    () => unreadCounts.inbox ?? 0,
+    [unreadCounts],
   )
 
   useEffect(() => {
@@ -1477,141 +1502,75 @@ export function MailDashboard({
     document.title = 'Cmail'
   }, [unreadInInbox])
 
-  const moveMessage = useCallback(
-    async (messageId: string, target: MailFolder) => {
-      if (useLiveMail && mailApiBase) {
-        const session = getSession()
-        if (!session) return
-        try {
-          await moveMailMessage(mailApiBase, getBearerTokenForApi(session), messageId, target)
-          await loadLiveMailbox()
-        } catch (e) {
-          setMailLoadError(e instanceof Error ? e.message : 'Move failed')
-        }
-        return
-      }
-      setEmails((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, folder: target } : m)),
-      )
-    },
-    [useLiveMail, mailApiBase, loadLiveMailbox],
-  )
-
-  /** Trash on server when live; otherwise local state only. */
-  const deleteOrTrashMessage = useCallback(
-    async (messageId: string) => {
-      const msg = emails.find((m) => m.id === messageId)
-      if (!msg) return
-      if (useLiveMail && mailApiBase) {
-        const session = getSession()
-        if (!session) return
-        try {
-          if (msg.folder === 'trash') {
-            await deleteMailMessage(mailApiBase, getBearerTokenForApi(session), messageId)
-          } else {
-            await moveMailMessage(mailApiBase, getBearerTokenForApi(session), messageId, 'trash')
-          }
-          await loadLiveMailbox()
-        } catch (e) {
-          setMailLoadError(e instanceof Error ? e.message : 'Delete failed')
-        }
-        return
-      }
-      setEmails((prev) => {
-        const m = prev.find((x) => x.id === messageId)
-        if (!m) return prev
-        if (m.folder === 'trash') {
-          return prev.filter((x) => x.id !== messageId)
-        }
-        return prev.map((x) => (x.id === messageId ? { ...x, folder: 'trash' as const } : x))
-      })
-    },
-    [emails, useLiveMail, mailApiBase, loadLiveMailbox],
-  )
-
-  /** Move selected messages into the Archive system folder. */
-  const archiveMessage = useCallback(
-    async (messageId: string) => {
-      const msg = emails.find((m) => m.id === messageId)
-      if (!msg || msg.folder === 'archive') return
-      if (useLiveMail && mailApiBase) {
-        const session = getSession()
-        if (!session) return
-        try {
-          await moveMailMessage(mailApiBase, getBearerTokenForApi(session), messageId, 'archive')
-          await loadLiveMailbox()
-        } catch (e) {
-          setMailLoadError(e instanceof Error ? e.message : 'Archive failed')
-        }
-        return
-      }
-      setEmails((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, folder: 'archive' as const } : m)),
-      )
-    },
-    [emails, useLiveMail, mailApiBase, loadLiveMailbox],
-  )
-
-  const archiveToolbar = useCallback(async () => {
-    const archiveIds = toolbarTargetIds.filter((id) => {
-      const msg = emails.find((m) => m.id === id)
-      return msg && msg.folder !== 'archive'
-    })
-    if (archiveIds.length === 0) return
-    if (useLiveMail && mailApiBase) {
-      const session = getSession()
-      if (!session) return
-      try {
-        const token = getBearerTokenForApi(session)
-        await Promise.all(archiveIds.map((id) => moveMailMessage(mailApiBase, token, id, 'archive')))
-        await loadLiveMailbox()
-      } catch (e) {
-        setMailLoadError(e instanceof Error ? e.message : 'Archive failed')
-      }
-      setBulkSelectedIds(new Set())
+  const changeMailFolder = useCallback(async (ids: string[], target: MailFolder | 'delete') => {
+    const session = getSession()
+    if (useLiveMail && (!session || !mailApiBase)) return
+    const snapshots = [...new Set(ids)].map((id) => emails.find((message) => message.id === id))
+      .filter((message): message is MailMessage => !!message && !mailChanges.current.isPending(message.id)
+        && (target === 'delete' || message.folder !== target))
+    if (!snapshots.length) return
+    const epoch = ++mailIntent.current
+    const previousSelected = selectedId
+    setMailLoadError(null)
+    setBulkSelectedIds(new Set())
+    if (snapshots.some((message) => message.id === selectedId)) setSelectedId(null)
+    if (!useLiveMail) {
+      const byId = new Map(snapshots.map((message) => [message.id, message]))
+      setEmails((prev) => prev.flatMap((message) => !byId.has(message.id) ? [message]
+        : target === 'delete' && message.folder === 'trash' ? []
+        : [{ ...message, folder: target === 'delete' ? 'trash' : target }]))
       return
     }
-    setEmails((prev) =>
-      prev.map((m) => (archiveIds.includes(m.id) ? { ...m, folder: 'archive' as const } : m)),
-    )
-    setBulkSelectedIds(new Set())
-  }, [toolbarTargetIds, emails, useLiveMail, mailApiBase, loadLiveMailbox])
-
-  const deleteToolbar = useCallback(async () => {
-    const ids = toolbarTargetIds
-    if (ids.length === 0) return
-    if (useLiveMail && mailApiBase) {
-      const session = getSession()
-      if (!session) return
-      try {
-        const token = getBearerTokenForApi(session)
-        await Promise.all(
-          ids.map(async (id) => {
-            const msg = emails.find((m) => m.id === id)
-            if (!msg) return
-            if (msg.folder === 'trash') {
-              await deleteMailMessage(mailApiBase, token, id)
-            } else {
-              await moveMailMessage(mailApiBase, token, id, 'trash')
-            }
-          }),
-        )
-        await loadLiveMailbox()
-      } catch (e) {
-        setMailLoadError(e instanceof Error ? e.message : 'Delete failed')
+    const jobs = snapshots.flatMap((message) => {
+      const destination = target === 'delete' ? message.folder === 'trash' ? null : 'trash' : target
+      const indexed = pageData?.messages.find((row) => row.id === message.id)
+      const change = mailChanges.current.begin(message, destination, {
+        ...mailboxMetrics(pageData), starred: starCountRef.current ?? mailChanges.current.counters(mailboxMetrics(pageData)).starred ?? 0,
+      }, { ...message, read: indexed?.read ?? message.read })
+      if (!change) return []
+      const oldStarChoice = starOverrides.current.get(message.id)
+      starOverrides.current.delete(message.id)
+      const starDelta = change.delta.starred ?? 0
+      if (starCountRef.current !== null && starDelta) {
+        starCountRef.current = Math.max(0, starCountRef.current + starDelta)
+        setStarCountOverride(starCountRef.current)
       }
-      setBulkSelectedIds(new Set())
-      return
-    }
-    setEmails((prev) => {
-      const idSet = new Set(ids)
-      const afterPerm = prev.filter((m) => !(m.folder === 'trash' && idSet.has(m.id)))
-      return afterPerm.map((m) =>
-        idSet.has(m.id) && m.folder !== 'trash' ? { ...m, folder: 'trash' as const } : m,
-      )
+      return [{ message, destination, change, oldStarChoice, starDelta }]
     })
-    setBulkSelectedIds(new Set())
-  }, [toolbarTargetIds, emails, useLiveMail, mailApiBase, loadLiveMailbox])
+    const changed = new Set(jobs.map((job) => job.message.id))
+    setEmails((prev) => prev.filter((message) => !changed.has(message.id)))
+    setMailChangeVersion((value) => value + 1)
+    const token = getBearerTokenForApi(session!)
+    await Promise.all(jobs.map(async ({ message, destination, change, oldStarChoice, starDelta }) => {
+      try {
+        if (destination) {
+          const receipt = await moveMailMessage(mailApiBase, token, message.id, destination)
+          mailChanges.current.commit(change, receipt)
+        } else {
+          await deleteMailMessage(mailApiBase, token, message.id)
+          mailChanges.current.commit(change)
+        }
+      } catch (error) {
+        mailChanges.current.rollback(change, mailboxMetrics(pageData))
+        if (oldStarChoice) starOverrides.current.set(message.id, oldStarChoice)
+        if (starCountRef.current !== null && starDelta) {
+          starCountRef.current = Math.max(0, starCountRef.current - starDelta)
+          setStarCountOverride(starCountRef.current)
+        }
+        setEmails((prev) => prev.some((row) => row.id === message.id) ? prev : [...prev, message]
+          .sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt)))
+        if (previousSelected === message.id && mailIntent.current === epoch) setSelectedId((value) => value ?? message.id)
+        setMailLoadError(error instanceof Error ? error.message : 'Could not update mail. The message was restored.')
+      } finally { setMailChangeVersion((value) => value + 1) }
+    }))
+    void reloadMailboxRef.current?.({ silent: true })
+  }, [emails, useLiveMail, mailApiBase, selectedId, pageData])
+
+  const moveMessage = useCallback((id: string, target: MailFolder) => changeMailFolder([id], target), [changeMailFolder])
+  const deleteOrTrashMessage = useCallback((id: string) => changeMailFolder([id], 'delete'), [changeMailFolder])
+  const archiveMessage = useCallback((id: string) => changeMailFolder([id], 'archive'), [changeMailFolder])
+  const archiveToolbar = useCallback(() => changeMailFolder(toolbarTargetIds, 'archive'), [changeMailFolder, toolbarTargetIds])
+  const deleteToolbar = useCallback(() => changeMailFolder(toolbarTargetIds, 'delete'), [changeMailFolder, toolbarTargetIds])
 
   const markToolbarReadState = useCallback(
     async (read: boolean) => {
@@ -1637,28 +1596,7 @@ export function MailDashboard({
     [toolbarTargetIds, useLiveMail, mailApiBase, loadLiveMailbox],
   )
 
-  const moveToolbar = useCallback(
-    async (target: MailFolder) => {
-      const ids = toolbarTargetIds
-      if (ids.length === 0) return
-      if (useLiveMail && mailApiBase) {
-        const session = getSession()
-        if (!session) return
-        try {
-          const token = getBearerTokenForApi(session)
-          await Promise.all(ids.map((id) => moveMailMessage(mailApiBase, token, id, target)))
-          await loadLiveMailbox()
-        } catch (e) {
-          setMailLoadError(e instanceof Error ? e.message : 'Move failed')
-        }
-        setBulkSelectedIds(new Set())
-        return
-      }
-      setEmails((prev) => prev.map((m) => (ids.includes(m.id) ? { ...m, folder: target } : m)))
-      setBulkSelectedIds(new Set())
-    },
-    [toolbarTargetIds, useLiveMail, mailApiBase, loadLiveMailbox],
-  )
+  const moveToolbar = useCallback((target: MailFolder) => changeMailFolder(toolbarTargetIds, target), [changeMailFolder, toolbarTargetIds])
 
   const moveTargets = useMemo(() => {
     const sys: { value: MailFolder; label: string }[] = [
@@ -2385,6 +2323,7 @@ export function MailDashboard({
                     <button
                       type="button"
                       className="cm-row__main"
+                      disabled={useLiveMail && mailChanges.current.isPending(m.id)}
                       onClick={() => openMail(m.id)}
                     >
                       <span className="cm-row__from">{m.from.name}</span>

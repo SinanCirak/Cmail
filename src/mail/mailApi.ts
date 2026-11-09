@@ -143,7 +143,7 @@ export async function deleteUserFolderApi(apiBase: string, token: string, folder
 }
 
 /** Move message to a system folder or `custom:<uuid>`. */
-export async function moveMailMessage(apiBase: string, token: string, sk: string, folder: string): Promise<void> {
+export async function moveMailMessage(apiBase: string, token: string, sk: string, folder: string): Promise<{ sk?: string; s3Key?: string }> {
   const res = await authenticatedFetch(`${apiBase}/mail/message`, {
     ...noCache,
     method: 'PATCH',
@@ -154,6 +154,7 @@ export async function moveMailMessage(apiBase: string, token: string, sk: string
     body: JSON.stringify({ sk, folder }),
   })
   await failIfNotOk(res)
+  return res.json()
 }
 
 export type OutboundAttachment = {
